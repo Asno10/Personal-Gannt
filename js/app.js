@@ -486,15 +486,15 @@ function renderTimeline() {
     const runEnd = [exam?.start, keys.at(-1)].filter(Boolean).sort().at(-1);
     if (!runStart || !inWin(runStart, runEnd)) { notThisWeek.push(s.subject); continue; }
     const week = days.reduce((h, k) => h + toNumber(s.cells[k]), 0);
-    const meta = [week ? `${fmtH(week)} h planned` : 'No study',
-      exam && (exam.start > last ? `exam ${shortLabel(exam.start)}` : exam.start >= first ? '' : 'exam done')].filter(Boolean).join(', ');
+    const meta = [week ? `${fmtH(week)} h` : '',
+      exam && (exam.start > last ? `exam ${shortLabel(exam.start)}` : '')].filter(Boolean).join(', ');
     const cells = days.map((k) => {
       const h = toNumber(s.cells[k]);
       const isExam = exam && exam.start === k;
       const run = k >= runStart && k <= runEnd;
       const inner = isExam
-        ? `<span class="c-exam">Exam${exam.time ? `<small>${esc(exam.time)}</small>` : ''}</span>${h ? `<span class="c-also">+${fmtH(h)} h</span>` : ''}`
-        : h ? `<span class="c-h" style="--a:${Math.round(30 + 70 * (h / maxH))}%">${fmtH(h)}</span>` : '';
+        ? `<span class="c-exam">Exam${exam.time ? `<small>${esc(exam.time)}</small>` : ''}</span>`
+        : h ? `<span class="c-h" style="--a:${Math.round(16 + 34 * (h / maxH))}%">${fmtH(h)}</span>` : '';
       const label = `${s.subject}, ${longLabel(k)}: ${isExam ? 'exam, ' : ''}${h ? fmtH(h) + ' hours' : 'no study'}`;
       return inPlan(k)
         ? `<button class="${cellCls(k, run ? 'in-run' : '')}" data-action="edit-hours" data-row="${s.row}" data-day="${k}" aria-label="${esc(label)}">${inner}</button>`
@@ -508,12 +508,6 @@ function renderTimeline() {
     studyRows.push(row({ cls: 'is-study', color: subjectVar(e.subject), name: e.subject, meta: 'Exam', cells }));
   }
   const weekTotal = days.reduce((h, k) => h + studyHoursOn(k), 0);
-  if (studyRows.length) {
-    studyRows.push(row({
-      cls: 'is-total', name: 'Total per day', meta: `${fmtH(weekTotal)} h`,
-      cells: days.map((k) => { const h = studyHoursOn(k); return `<span class="${cellCls(k)}">${h ? `<span class="c-total">${fmtH(h)}</span>` : ''}</span>`; }).join(''),
-    }));
-  }
 
   // Tasks planned in this window.
   const tasks = allTasks().filter((t) => { const pd = plannedDays(t); return pd.length ? pd.some((k) => k >= first && k <= last) : inWin(t.start, t.end); });
@@ -586,14 +580,14 @@ function renderTimeline() {
         <button class="icon-btn" data-action="tl-week" data-step="-1" ${atStart ? 'disabled' : ''} aria-label="Earlier days">${ICON.left}</button>
         <div class="tg-title">
           <h1>${esc(shortLabel(first))} to ${esc(shortLabel(last))}</h1>
-          <span>${esc(weekName(state.tlStart))}${todayKey() !== state.tlStart ? ' <button class="link" data-action="tl-now">Back to today</button>' : ''}</span>
+          ${todayKey() !== state.tlStart ? `<button class="link" data-action="tl-now">${esc(weekName(state.tlStart))}, back to today</button>` : ''}
         </div>
         <button class="icon-btn" data-action="tl-week" data-step="1" ${atEnd ? 'disabled' : ''} aria-label="Later days">${ICON.right}</button>
       </div>
       <div class="tg-head" id="tg-head">
         <div class="tg-head-label"></div>
         <div class="tg-days">
-          ${days.map((k) => `<button class="tg-day ${k === tk ? 'is-today' : ''} ${dateOfKey(k).getDay() % 6 === 0 ? 'is-weekend' : ''}" data-action="open-day" data-day="${k}" ${inPlan(k) ? '' : 'disabled'} aria-label="Open ${esc(longLabel(k))}"><span>${esc(dowLabel(k).slice(0, 2))}</span><b>${dateOfKey(k).getDate()}</b></button>`).join('')}
+          ${days.map((k) => `<button class="tg-day ${k === tk ? 'is-today' : ''} ${dateOfKey(k).getDay() % 6 === 0 ? 'is-weekend' : ''}" data-action="open-day" data-day="${k}" ${inPlan(k) ? '' : 'disabled'} aria-label="Open ${esc(longLabel(k))}"><span>${esc(dowLabel(k).slice(0, 2))}</span><b>${dateOfKey(k).getDate()}</b><i>${studyHoursOn(k) ? fmtH(studyHoursOn(k)) + 'h' : ''}</i></button>`).join('')}
         </div>
       </div>
       ${groups.map(([id, name, meta, rows, empty]) => {
@@ -604,7 +598,7 @@ function renderTimeline() {
             ${open ? `${rows.join('')}${empty ? `<p class="tg-empty">${esc(empty)}</p>` : ''}` : ''}
           </section>`;
       }).join('')}
-      <p class="hint tg-hint">Tap a day in a row to change it. Swipe sideways or use the arrows to see earlier or later days.</p>
+      <p class="hint tg-hint">Tap a day to change it. Swipe for other weeks. The number under each date is that day's total study.</p>
     </div>`;
 }
 
