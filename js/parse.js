@@ -51,33 +51,37 @@ function classify(title) {
   return 'other';
 }
 
-// Splits "Do X (P1, open, scheduled Sat 24 Oct)" into title, status and detail.
-export function taskStatus(text) {
+// Splits a task cell such as "Do X (P1, open, scheduled Sat 24 Oct)" into its
+// parts: title "Do X", priority "P1", status "open" and note "scheduled Sat 24 Oct".
+// The status group is the last parenthesis holding "open" or "done"; failing that,
+// a trailing parenthesis is read as the note.
+export function splitTask(text) {
   const t = str(text);
-  const m = t.match(/\s*\(([^()]*\b(open|done)\b[^()]*)\)/i);
-  if (m) {
-    return {
-      title: (t.slice(0, m.index) + t.slice(m.index + m[0].length)).trim(),
-      status: m[2].toLowerCase(),
-      detail: m[1].trim(),
-      raw: t,
-    };
+  const groups = [...t.matchAll(/\(([^()]*)\)/g)];
+  let g = [...groups].reverse().find((m) => /(^|[,;]\s*)(open|done)\b/i.test(m[1].trim()));
+  if (!g) {
+    const last = groups[groups.length - 1];
+    if (last && last.index + last[0].length >= t.length) g = last;
   }
-  const trail = t.match(/\s*\(([^()]*)\)\s*$/);
-  if (trail) return { title: t.slice(0, trail.index).trim(), status: 'open', detail: trail[1].trim(), raw: t };
-  return { title: t, status: 'open', detail: '', raw: t };
+  if (!g) return { title: t, status: 'open', prio: '', statusPart: '', note: '', doneOn: '', raw: t };
+  const title = (t.slice(0, g.index) + t.slice(g.index + g[0].length)).replace(/\s+/g, ' ').trim();
+  let prio = '';
+  let statusPart = '';
+  const rest = [];
+  for (const p of g[1].split(/\s*[,;]\s*/).map((x) => x.trim()).filter(Boolean)) {
+    if (!prio && /^P\d$/i.test(p)) prio = p.toUpperCase();
+    else if (!statusPart && /^(open|done)\b/i.test(p)) statusPart = p;
+    else rest.push(p);
+  }
+  const status = /^done/i.test(statusPart) ? 'done' : 'open';
+  const doneOn = status === 'done' ? (statusPart.match(/(\d{1,2}\s+[A-Za-z]{3})/) || [])[1] || '' : '';
+  return { title, status, prio, statusPart, note: rest.join('; '), doneOn, raw: t };
 }
 
-// Rewrites a task's text with a new status, keeping a leading priority tag (P1, P2...).
-export function withStatus(text, status, label) {
-  const t = str(text);
-  const m = t.match(/\s*\(([^()]*\b(open|done)\b[^()]*)\)/i);
-  const inner = m ? m[1] : '';
-  const prio = (inner.match(/^(P\d)\s*,\s*/i) || [])[1];
-  const tag = status === 'done' ? `done ${label}` : 'open';
-  const paren = `(${prio ? prio + ', ' : ''}${tag})`;
-  if (m) return (t.slice(0, m.index) + ' ' + paren + t.slice(m.index + m[0].length)).replace(/\s+/g, ' ').trim();
-  return `${t} ${paren}`;
+// Rebuilds the task cell from its parts, in the same convention.
+export function composeTask({ title, prio, statusPart, note }) {
+  const parts = [prio, statusPart || 'open', note].map((x) => str(x)).filter(Boolean);
+  return `${str(title)} (${parts.join(', ')})`;
 }
 
 export function parseGantt(rows, formulas = []) {
@@ -178,7 +182,7 @@ export function parseGantt(rows, formulas = []) {
       cells,
       lockedDates: isFormula(r, C.start) || isFormula(r, C.end),
     };
-    if (section.type === 'tasks') Object.assign(item, { status: taskStatus(item.task) });
+    if (section.type === 'tasks') Object.assign(item, { status: splitTask(item.task) });
     section.items.push(item);
   }
 
