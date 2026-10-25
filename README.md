@@ -15,3 +15,7 @@ The site holds code only. The sheet is read in the browser after Google sign-in,
 The parser finds columns by their header labels (Phase, Subject, Task, Start, End, Hours) and the day columns by their dates, and groups rows by the single-cell section titles (Study log, Exams, Todoist, Calendar events, Fixed commitments, Exercise plan). The Study log section holds the hours actually studied, one row per subject, and is what the Exams page counts as studied. New rows, sections and days need no code changes. Cells holding formulas are never overwritten.
 
 Marking a task done rewrites its status note, for example `(open, scheduled Sat 24 Oct)` becomes `(done 24 Oct)`. Todoist itself is not updated.
+
+## Publishing an update
+
+Raise the number in `version.json`, `BUILD` in `js/app.js` and the `?v=` values in `index.html` and the imports at the top of `js/app.js` together. Open copies of the app see the new number and reload themselves.

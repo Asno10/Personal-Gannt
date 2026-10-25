@@ -1,6 +1,6 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=7';
-import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=7';
+import * as api from './sheets.js?v=8';
+import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=8';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -49,7 +49,28 @@ const app = $('#app');
 
 // ---------- Boot and auth ----------
 
+// ---------- Updates ----------
+// GitHub Pages lets phones keep a copy of the page for up to ten minutes. On
+// opening, and whenever the app comes back to the screen, it asks for the
+// published version without any cache; if a newer one is out, it reloads at a
+// fresh address so every file is fetched new.
+const BUILD = '8';
+
+async function checkForUpdate() {
+  try {
+    const res = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) return;
+    const { v } = await res.json();
+    if (!v || v === BUILD) { sessionStorage.removeItem('pg.updating'); return; }
+    if (writes.size || inflight) return; // finish saving first; checked again later
+    if (sessionStorage.getItem('pg.updating') === v) return; // already tried once
+    sessionStorage.setItem('pg.updating', v);
+    location.replace(`./?v=${encodeURIComponent(v)}`);
+  } catch {}
+}
+
 function boot() {
+  checkForUpdate();
   if (!api.configured()) return renderSetup();
   renderSignIn();
 }
@@ -1629,7 +1650,7 @@ document.addEventListener('click', (ev) => {
   const item = el.dataset.row ? findItem(el.dataset.row) : null;
   switch (a) {
     case 'sign-in': return signIn(store.get('pg.signedIn') === '1');
-    case 'refresh': return flush().then(() => refresh());
+    case 'refresh': return flush().then(() => { checkForUpdate(); return refresh(); });
     case 'menu': return accountMenu();
     case 'view':
       if (Date.now() - tabTouchAt < 700) return; // handled by the touch on the tab bar
@@ -1710,6 +1731,7 @@ document.addEventListener('keydown', (ev) => {
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { flush(); return; }
+  checkForUpdate();
   if (!state.plan) return;
   if (!api.hasToken()) return renderSignIn('Your session ended. Sign in again to continue.');
   if (Date.now() - state.loadedAt > 120000 && !writes.size && !inflight) refresh();
