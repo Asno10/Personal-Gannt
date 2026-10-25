@@ -842,3 +842,11 @@ dialog.is-settling { transition: transform 0.5s var(--spring); }
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
 
+
+/* Dark mode: planned bars and the chart key need more contrast */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .spark-plan, :root:not([data-theme="light"]) .k-plan { background: color-mix(in srgb, var(--c) 45%, transparent); }
+  :root:not([data-theme="light"]) .exam-key { --c: var(--ink); }
+}
+:root[data-theme="dark"] .spark-plan, :root[data-theme="dark"] .k-plan { background: color-mix(in srgb, var(--c) 45%, transparent); }
+:root[data-theme="dark"] .exam-key { --c: var(--ink); }

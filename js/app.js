@@ -1,6 +1,6 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=8';
-import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=8';
+import * as api from './sheets.js?v=9';
+import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=9';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -54,7 +54,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '8';
+const BUILD = '9';
 
 async function checkForUpdate() {
   try {
