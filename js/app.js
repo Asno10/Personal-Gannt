@@ -1,6 +1,6 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=9';
-import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=9';
+import * as api from './sheets.js?v=10';
+import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=10';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -54,7 +54,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '9';
+const BUILD = '10';
 
 async function checkForUpdate() {
   try {
@@ -999,13 +999,13 @@ function renderExams() {
   const past = exams.filter((e) => e.start < tk);
   return `
     <h1 class="page-title">Exams</h1>
-    ${upcoming.some((e) => state.plan.study.some((s) => s.subject === e.subject)) ? `<p class="exam-key"><i class="k-plan"></i>Planned <i class="k-done"></i>Studied</p>` : ''}
     <div class="exam-grid">${upcoming.map((e) => examCard(e, tk)).join('') || '<p class="empty">No upcoming exams in the sheet.</p>'}</div>
     ${past.length ? `<h2 class="sub">Finished</h2><div class="exam-grid is-past">${past.map((e) => examCard(e, tk)).join('')}</div>` : ''}`;
 }
 
-// One card per exam: name and when on the left, the countdown on the right,
-// then hours studied against the plan, a slim day-by-day chart, and logging.
+// One clean card per exam: subject, when, and the countdown; one progress bar;
+// one line with hours, pace and a Log button. Tapping the card opens its
+// day-by-day chart.
 function examCard(e, tk) {
   const study = state.plan.study.find((s) => s.subject === e.subject);
   const active = study ? state.plan.days.filter((d) => d.key <= e.start).map((d) => ({ k: d.key, h: toNumber(study.cells[d.key]) })).filter((x) => x.h > 0) : [];
@@ -1019,39 +1019,43 @@ function examCard(e, tk) {
   const max = Math.max(1, ...span.map((d) => Math.max(toNumber(study?.cells[d.key]), loggedOn(e.subject, d.key))));
   const n = daysBetween(tk, e.start);
   const rooms = ((e.task.match(/rooms?\s+([\d,\s]+)/i) || [])[1] || '').trim();
-  // "Physics I Midterm, Rooms 104, 112" -> "Midterm"; "YDS/2 (ÖSYM)" stays as it is.
-  const kind = e.task.replace(/,?\s*rooms?\s+[\d,\s]+$/i, '').replace(e.subject, '').replace(/^[\s,:-]+/, '').trim();
-  const when = [kind, `${dowLabel(e.start)} ${shortLabel(e.start)}${e.time ? ', ' + e.time : ''}`, rooms ? `Rooms ${rooms}` : ''].filter(Boolean);
+  // Leave out "Midterm" (they all are); keep names such as "YDS/2 (ÖSYM)".
+  const base = e.task.replace(/,?\s*rooms?\s+[\d,\s]+$/i, '').trim();
+  const rest = base.startsWith(e.subject + ' ') ? base.slice(e.subject.length).trim() : base;
+  const kind = /^midterm$/i.test(rest) || rest === e.subject ? '' : rest;
+  const when = [kind, `${dowLabel(e.start)} ${shortLabel(e.start)}`, e.time, rooms ? `Rooms ${rooms}` : ''].filter(Boolean);
   const pct = total ? Math.min(100, Math.round((studied / total) * 100)) : 0;
   const gap = dueSoFar - studied;
-  const pace = !study || n < 0 ? '' : gap > 0.25 ? `<span class="pace is-behind">${fmtH(gap)} h behind</span>` : dueSoFar > 0 || studied > 0 ? `<span class="pace is-good">${gap < -0.25 ? `${fmtH(-gap)} h ahead` : 'On plan'}</span>` : '';
-  const count = n < 0 ? '<b>Done</b>' : n === 0 ? '<b>Today</b>' : `<b>${n}</b><small>${n === 1 ? 'day' : 'days'}</small>`;
+  const pace = !study || n < 0 ? '' : gap > 0.25 ? `<span class="pace-t is-behind">${fmtH(gap)} h behind</span>` : studied >= total && total ? '<span class="pace-t is-good">Plan covered</span>' : dueSoFar > 0 || studied > 0 ? `<span class="pace-t is-good">${gap < -0.25 ? `${fmtH(-gap)} h ahead` : 'On plan'}</span>` : '';
+  const open = state.examOpen?.has(e.subject);
+  const count = n < 0 ? '<b class="is-word">Done</b>' : n === 0 ? '<b class="is-word">Today</b>' : `<b>${n}</b><small>${n === 1 ? 'day' : 'days'}</small>`;
   return `
-    <article class="exam" style="--c:${subjectVar(e.subject)}">
+    <article class="exam ${open ? 'is-open' : ''}" style="--c:${subjectVar(e.subject)}" ${study ? `data-action="toggle-exam" data-subject="${esc(e.subject)}" aria-expanded="${Boolean(open)}"` : ''}>
       <header class="exam-top">
         <div class="exam-id">
           <h2 class="exam-subject">${esc(e.subject)}</h2>
-          <p class="exam-when">${when.map(esc).join('<span class="dot" aria-hidden="true"></span>')}</p>
+          <p class="exam-when">${when.map(esc).join(' · ')}</p>
         </div>
         <div class="exam-count ${n <= 3 && n >= 0 ? 'is-near' : ''}" aria-label="${n < 0 ? 'Finished' : n === 0 ? 'Today' : plural(n, 'day') + ' left'}">${count}</div>
       </header>
       ${study ? `
-        <div class="exam-stats">
-          <span class="exam-hours"><b>${fmtH(studied)}</b> / ${fmtH(total)} h</span>
-          ${pace}
-        </div>
         <div class="progress-bar" role="img" aria-label="${fmtH(studied)} of ${fmtH(total)} planned hours studied"><span style="width:${pct}%"></span></div>
-        ${span.length ? `
-        <div class="spark" aria-hidden="true">
-          ${span.map((d) => {
-            const h = toNumber(study.cells[d.key]);
-            const l = d.key <= tk ? loggedOn(e.subject, d.key) : 0;
-            const pctH = (x) => (x ? Math.max(10, (x / max) * 100) : 0);
-            return `<span class="spark-day ${d.key === tk ? 'is-today' : ''}" title="${esc(shortLabel(d.key))}: ${fmtH(h)} h planned${d.key <= tk ? `, ${fmtH(l)} h studied` : ''}"><i class="spark-plan" style="height:${h ? pctH(h) : 0}%"></i>${l ? `<i class="spark-done" style="height:${pctH(l)}%"></i>` : ''}</span>`;
-          }).join('')}
+        <div class="exam-line">
+          <span class="exam-hours"><b>${fmtH(studied)}</b> of ${fmtH(total)} h${pace ? ' · ' + pace : ''}</span>
+          ${n >= 0 ? `<button class="log-btn" data-action="log-hours" data-subject="${esc(e.subject)}" data-day="${tk}">${ICON.plus}Log</button>` : ''}
         </div>
-        <div class="spark-axis"><span>${esc(shortLabel(firstK))}</span><span>Exam</span></div>` : ''}
-        ${n >= 0 ? `<footer class="exam-foot"><button class="log-btn" data-action="log-hours" data-subject="${esc(e.subject)}" data-day="${tk}">${ICON.plus}Log today</button>${total - studied > 0 ? `<span class="exam-left">${fmtH(total - studied)} h to go</span>` : '<span class="exam-left is-good">Plan covered</span>'}</footer>` : ''}` : ''}
+        ${open && span.length ? `
+          <div class="exam-chart">
+            <div class="spark" aria-hidden="true">
+              ${span.map((d) => {
+                const h = toNumber(study.cells[d.key]);
+                const l = d.key <= tk ? loggedOn(e.subject, d.key) : 0;
+                const pctH = (x) => (x ? Math.max(10, (x / max) * 100) : 0);
+                return `<span class="spark-day ${d.key === tk ? 'is-today' : ''}"><i class="spark-plan" style="height:${h ? pctH(h) : 0}%"></i>${l ? `<i class="spark-done" style="height:${pctH(l)}%"></i>` : ''}</span>`;
+              }).join('')}
+            </div>
+            <div class="spark-axis"><span>${esc(shortLabel(firstK))}</span><span class="spark-key"><i class="k-plan"></i>Planned<i class="k-done"></i>Studied</span><span>Exam</span></div>
+          </div>` : ''}` : ''}
     </article>`;
 }
 
@@ -1671,6 +1675,12 @@ document.addEventListener('click', (ev) => {
     case 'task-filter': state.taskFilter = el.dataset.filter; return render();
     case 'toggle-done': state.showDone = !state.showDone; return render();
     case 'tl-today': return scrollTimelineToToday(true);
+    case 'toggle-exam': {
+      const sub = el.dataset.subject;
+      state.examOpen ||= new Set();
+      if (state.examOpen.has(sub)) state.examOpen.delete(sub); else state.examOpen.add(sub);
+      return render();
+    }
     case 'toggle-done-tl': state.tlShowDone = !state.tlShowDone; return render();
     case 'toggle-section': {
       const id = el.dataset.key;
