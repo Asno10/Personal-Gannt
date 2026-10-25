@@ -39,7 +39,11 @@
 }
 
 * { box-sizing: border-box; }
-html, body { margin: 0; max-width: 100%; overflow-x: hidden; overflow-x: clip; overscroll-behavior-x: none; }
+/* The document never scrolls: the bar and tab bar are fixed glass layers and
+   each page scrolls inside the pager, so only page content bounces. */
+html, body { margin: 0; height: 100%; max-width: 100%; overflow: hidden; overscroll-behavior: none; }
+#app { height: 100%; }
+.gate { overflow-y: auto; max-height: 100%; }
 body {
   background: var(--paper);
   color: var(--ink);
@@ -73,13 +77,26 @@ code { font-size: 0.9em; background: var(--wash); padding: 0.1em 0.35em; border-
 .link { color: var(--s0); font-weight: 600; }
 .chip-btn { padding: 6px 14px; border-radius: 999px; border: 1px solid var(--rule); font-weight: 600; font-size: 0.9rem; }
 
-/* Top bar and tabs */
+/* Top bar and tabs: Liquid Glass style layers over the content */
+:root {
+  --glass: color-mix(in srgb, var(--panel) 62%, transparent);
+  --glass-edge: rgb(255 255 255 / 0.65);
+  --glass-shine: rgb(255 255 255 / 0.55);
+  --glass-shadow: 0 10px 34px rgb(15 25 40 / 0.16), 0 1px 3px rgb(15 25 40 / 0.08);
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --glass: color-mix(in srgb, var(--panel) 58%, transparent); --glass-edge: rgb(255 255 255 / 0.14); --glass-shine: rgb(255 255 255 / 0.12); --glass-shadow: 0 10px 34px rgb(0 0 0 / 0.45); } }
+:root[data-theme="dark"] { --glass: color-mix(in srgb, var(--panel) 58%, transparent); --glass-edge: rgb(255 255 255 / 0.14); --glass-shine: rgb(255 255 255 / 0.12); --glass-shadow: 0 10px 34px rgb(0 0 0 / 0.45); }
+.glass, .bar, .tabs, #toast {
+  -webkit-backdrop-filter: blur(22px) saturate(180%); backdrop-filter: blur(22px) saturate(180%);
+}
+
 .bar {
-  position: sticky; top: 0; z-index: 20;
+  position: fixed; top: 0; left: 0; right: 0; z-index: 20;
   display: flex; align-items: center; gap: 8px;
   padding: max(6px, env(safe-area-inset-top)) 8px 6px 16px;
-  background: var(--paper);
-  border-bottom: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--paper) 72%, transparent);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--rule) 70%, transparent);
+  touch-action: none;
 }
 .bar-title { font: 700 1.25rem/1 var(--font-c); letter-spacing: 0.01em; }
 .bar-side { margin-left: auto; display: flex; align-items: center; }
@@ -91,31 +108,67 @@ code { font-size: 0.9em; background: var(--wash); padding: 0.1em 0.35em; border-
 .status.is-error { color: var(--alert); font-weight: 600; }
 @keyframes pulse { 50% { opacity: 0.3; } }
 
+/* Floating glass tab bar with a highlight that slides with the pages */
 .tabs {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+  position: fixed; z-index: 30;
+  left: 14px; right: 14px; bottom: max(10px, calc(env(safe-area-inset-bottom) - 8px));
   display: grid; grid-template-columns: repeat(4, 1fr);
-  padding: 4px 6px max(4px, env(safe-area-inset-bottom));
-  background: var(--panel); border-top: 1px solid var(--rule);
+  padding: 5px; border-radius: 30px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--glass-edge), inset 0 1px 0 var(--glass-shine), var(--glass-shadow);
+  touch-action: none;
 }
-.tab { display: grid; justify-items: center; gap: 2px; padding: 6px 0 4px; border-radius: 10px; font-size: 0.75rem; font-weight: 500; color: var(--ink-3); }
-.tab svg { width: 24px; height: 24px; }
+.tab-glow {
+  position: absolute; top: 5px; bottom: 5px; left: 5px; width: calc((100% - 10px) / 4);
+  border-radius: 25px; pointer-events: none;
+  transform: translateX(calc(var(--ti, 0) * 100%));
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.55), rgb(255 255 255 / 0.12));
+  box-shadow: inset 0 0 0 1px var(--glass-edge), inset 0 1px 1px var(--glass-shine), 0 2px 10px rgb(15 25 40 / 0.10);
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .tab-glow { background: linear-gradient(180deg, rgb(255 255 255 / 0.16), rgb(255 255 255 / 0.04)); } }
+.tab { position: relative; display: grid; justify-items: center; gap: 2px; padding: 6px 0 5px; border-radius: 24px; font-size: 0.72rem; font-weight: 500; color: var(--ink-2); }
+.tab svg { width: 23px; height: 23px; }
 .tab[aria-current="page"] { color: var(--ink); font-weight: 600; }
 .tab[aria-current="page"] svg { color: var(--signal); }
 
-.view { max-width: 44rem; margin: 0 auto; padding: 12px 16px calc(var(--tabs-h) + 40px + env(safe-area-inset-bottom)); }
-/* On the day view, horizontal swipes change day instead of panning the page. */
-.view-today { touch-action: pan-y; }
+/* Pager: pages side by side, one per swipe; content runs under the glass */
+.pager {
+  position: fixed; inset: 0; z-index: 1;
+  display: flex; overflow-x: auto; overflow-y: hidden;
+  scroll-snap-type: x mandatory; overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.pager::-webkit-scrollbar { display: none; }
+.page {
+  flex: 0 0 100%; width: 100%; height: 100%;
+  overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain;
+  scroll-snap-align: start; scroll-snap-stop: always;
+  -webkit-overflow-scrolling: touch;
+}
+.page::-webkit-scrollbar { display: none; }
+
+.view { max-width: 44rem; margin: 0 auto; padding: calc(var(--bar-h, 56px) + 12px) 16px calc(var(--tabs-h) + 40px + env(safe-area-inset-bottom)); }
 
 @media (min-width: 760px) {
-  .tabs { position: static; display: flex; gap: 2px; padding: 0; background: none; border: 0; margin-left: 20px; }
+  /* Wide screens: the tabs sit in the top bar, next to the title. */
+  .tabs { position: fixed; top: 0; left: 190px; right: auto; bottom: auto; z-index: 21; height: var(--bar-h, 56px); align-items: center; display: flex; gap: 2px; padding: env(safe-area-inset-top) 0 0; background: none; border: 0; box-shadow: none; border-radius: 0; -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .tab-glow { display: none; }
   .tab { display: inline-flex; align-items: center; gap: 8px; padding: 0 14px; min-height: 40px; font-size: 0.95rem; }
   .tab svg { width: 20px; height: 20px; }
   .tab[aria-current="page"] { background: var(--wash); }
   .view { padding-bottom: 48px; }
 }
 
-/* Day navigation */
-.day-nav { margin: 0 -16px 18px; }
+/* Day navigation: month row and strip stay pinned under the bar */
+.day-head {
+  position: sticky; top: var(--bar-h, 56px); z-index: 5;
+  margin: -12px -16px 10px; padding-top: 4px;
+  background: color-mix(in srgb, var(--paper) 80%, transparent);
+  -webkit-backdrop-filter: blur(22px) saturate(180%); backdrop-filter: blur(22px) saturate(180%);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--rule) 60%, transparent);
+}
+.chip-btn.is-hidden { visibility: hidden; }
+.day-body.is-turning { animation: fade-in 0.22s ease-out; }
 .day-nav-top { display: flex; align-items: center; gap: 4px; padding: 0 8px 0 16px; min-height: 44px; }
 .month { font-weight: 600; color: var(--ink-2); font-size: 0.95rem; }
 .pick-date { position: relative; cursor: pointer; }
@@ -123,8 +176,9 @@ code { font-size: 0.9em; background: var(--wash); padding: 0.1em 0.35em; border-
 .pick-date input::-webkit-calendar-picker-indicator { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 
 .strip {
-  display: flex; gap: 6px; overflow-x: auto; padding: 4px 16px 8px;
-  scroll-snap-type: x proximity; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  display: flex; gap: 6px; overflow-x: auto; padding: 4px calc(50% - 23px) 8px;
+  scroll-snap-type: x mandatory; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
 }
 .strip::-webkit-scrollbar { display: none; }
 .strip-day {
@@ -142,12 +196,13 @@ code { font-size: 0.9em; background: var(--wash); padding: 0.1em 0.35em; border-
 .m-exam { background: var(--signal); transform: rotate(45deg); border-radius: 1px; }
 .m-task { background: var(--ink-3); border-radius: 50%; }
 .strip-day.is-today { border-color: var(--signal); }
+.strip-day { transition: background-color 0.18s, color 0.18s, border-color 0.18s; }
 .strip-day.is-selected { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 .strip-day.is-selected .sd-dow { color: color-mix(in srgb, var(--paper) 70%, transparent); }
 .strip-day.is-selected .sd-load { background: color-mix(in srgb, var(--paper) 25%, transparent); }
 .strip-day.is-selected .sd-load span { background: var(--paper); }
 .strip-day.is-selected .m-task { background: var(--paper); }
-.day-title { font: 600 1.5rem/1.2 var(--font); padding: 6px 16px 0; }
+.day-title { font: 600 1.5rem/1.2 var(--font); margin: 4px 0 16px; }
 
 
 /* Countdown */
@@ -306,7 +361,8 @@ code { font-size: 0.9em; background: var(--wash); padding: 0.1em 0.35em; border-
 @media (min-width: 760px) { .view-timeline { --name-w: 210px; } }
 .tl-head-wrap {
   position: sticky; top: var(--bar-h, 56px); z-index: 6;
-  overflow: hidden; background: var(--paper);
+  overflow: hidden; background: color-mix(in srgb, var(--paper) 82%, transparent);
+  -webkit-backdrop-filter: blur(22px) saturate(180%); backdrop-filter: blur(22px) saturate(180%);
   border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
   touch-action: pan-y;
 }
@@ -343,7 +399,8 @@ code { font-size: 0.9em; background: var(--wash); padding: 0.1em 0.35em; border-
 .tl-events.is-alert .tl-sub { color: var(--alert); font-weight: 600; }
 
 /* Pinned date row */
-.tl-head th { background: var(--paper); }
+.tl-head th { background: transparent; }
+.tl-head .tl-name { background: var(--paper); box-shadow: 1px 0 0 var(--rule), 6px 0 8px -6px rgb(0 0 0 / 0.12); }
 .tl-head .tl-name { z-index: 4; vertical-align: bottom; }
 .tl-head .tl-name > .tl-today-btn { display: inline-flex; width: auto; min-height: 34px; padding: 5px 12px; margin: 0 0 10px 12px; }
 .tl-today-btn { align-items: center; gap: 6px; border-radius: 999px; border: 1px solid var(--rule); font-size: 0.82rem; font-weight: 600; background: var(--panel); }
@@ -411,14 +468,16 @@ code { font-size: 0.9em; background: var(--wash); padding: 0.1em 0.35em; border-
 
 /* Sheets (dialogs): bottom sheet on phones, centred card on wider screens */
 dialog {
-  border: 0; padding: 0; color: var(--ink); background: var(--panel);
+  border: 0; padding: 0; color: var(--ink);
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
+  -webkit-backdrop-filter: blur(30px) saturate(180%); backdrop-filter: blur(30px) saturate(180%);
   width: 100%; max-width: 100%; max-height: 88dvh; margin: auto 0 0;
-  border-radius: 18px 18px 0 0; box-shadow: 0 -10px 40px rgb(0 0 0 / 0.25);
+  border-radius: 26px 26px 0 0; box-shadow: inset 0 1px 0 var(--glass-shine), inset 0 0 0 1px var(--glass-edge), 0 -10px 40px rgb(0 0 0 / 0.22);
   overflow: auto;
 }
 dialog[open] { animation: sheet-up 0.22s ease-out; }
 @keyframes sheet-up { from { transform: translateY(40px); opacity: 0.6; } }
-dialog::backdrop { background: rgb(8 12 16 / 0.45); }
+dialog::backdrop { background: rgb(8 12 16 / 0.32); }
 @media (min-width: 760px) {
   dialog { width: min(30rem, calc(100vw - 32px)); margin: auto; border-radius: 16px; box-shadow: 0 20px 60px rgb(0 0 0 / 0.3); }
   .grab { display: none; }
@@ -473,10 +532,10 @@ dialog::backdrop { background: rgb(8 12 16 / 0.45); }
 
 /* Toast */
 #toast {
-  position: fixed; left: 50%; bottom: calc(var(--tabs-h) + 14px + env(safe-area-inset-bottom)); z-index: 50;
+  position: fixed; left: 50%; bottom: calc(var(--tabs-h) + 18px + env(safe-area-inset-bottom)); z-index: 50;
   transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
   display: flex; gap: 16px; align-items: center;
-  background: var(--strip); color: var(--strip-ink); padding: 10px 10px 10px 18px; border-radius: 999px;
+  background: color-mix(in srgb, var(--strip) 82%, transparent); color: var(--strip-ink); padding: 10px 10px 10px 18px; border-radius: 999px;
   font-size: 0.92rem; max-width: calc(100vw - 32px); transition: transform 0.2s, opacity 0.2s;
   box-shadow: 0 6px 24px rgb(0 0 0 / 0.2);
 }

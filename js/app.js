@@ -1,6 +1,6 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=3';
-import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=3';
+import * as api from './sheets.js?v=4';
+import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=4';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -111,7 +111,7 @@ async function refresh({ first = false } = {}) {
     }
     if (first) {
       state.day = clampDay(todayKey());
-      render({ resetScroll: true });
+      render();
     } else if (changed) {
       render();
     } else {
@@ -200,44 +200,109 @@ const VIEWS = [
   ['tasks', 'Tasks', 'list'],
 ];
 
-function render({ resetScroll = false } = {}) {
-  if (!state.plan) return;
-  if ($('#dialog')?.open) { state.dirty = true; return; }
-  const view = VIEWS.some(([v]) => v === state.view) ? state.view : 'today';
-
-  // Keep every scroll position across re-renders, so an edit never moves the page.
-  const keep = resetScroll ? null : {
-    y: window.scrollY,
-    tl: $('#tl-scroll')?.scrollLeft,
-  };
-
+// The app is a fixed top bar over a pager: one page per tab, side by side.
+// Each page scrolls (and bounces) on its own, so the bar never moves, and a
+// sideways swipe snaps to the next tab. The shell is built once; renders only
+// replace page contents, so scroll positions and the day strip are kept.
+function ensureShell() {
+  if ($('#pager')) return false;
   app.innerHTML = `
     <header class="bar">
       <div class="bar-title">Personal Gantt</div>
-      <nav class="tabs" aria-label="Views">
-        ${VIEWS.map(([v, label, icon]) => `<button class="tab" data-action="view" data-view="${v}" aria-current="${v === view ? 'page' : 'false'}">${ICON[icon]}<span>${label}</span></button>`).join('')}
-      </nav>
       <div class="bar-side">
         <span class="status" id="status" aria-live="polite"></span>
         <button class="icon-btn" data-action="refresh" aria-label="Reload from the sheet" title="Reload from the sheet">${ICON.refresh}</button>
         <button class="icon-btn" data-action="menu" aria-label="Account" title="Account">${ICON.user}</button>
       </div>
     </header>
-    <main class="view view-${view}" id="view">${VIEW_RENDER[view]()}</main>`;
-  renderStatus();
+      <nav class="tabs" id="tabs" aria-label="Views">
+        <span class="tab-glow" aria-hidden="true"></span>
+        ${VIEWS.map(([v, label, icon]) => `<button class="tab" data-action="view" data-view="${v}" aria-current="false">${ICON[icon]}<span>${label}</span></button>`).join('')}
+      </nav>
+    <div class="pager" id="pager">
+      ${VIEWS.map(([v]) => `<section class="page" id="page-${v}" data-view="${v}"><main class="view view-${v}" id="view-${v}"></main></section>`).join('')}
+    </div>`;
+  bindPager($('#pager'));
+  return true;
+}
 
-  window.scrollTo(0, keep ? keep.y : 0);
+function render() {
+  if (!state.plan) return;
+  if ($('#dialog')?.open) { state.dirty = true; return; }
+  if (!VIEWS.some(([v]) => v === state.view)) state.view = 'today';
+  const fresh = ensureShell();
+  const bar = $('.bar');
+  document.documentElement.style.setProperty('--bar-h', bar.offsetHeight + 'px');
+
+  const tlLeft = $('#tl-scroll')?.scrollLeft;
+  renderDayPage();
+  $('#view-timeline').innerHTML = renderTimeline();
+  $('#view-exams').innerHTML = renderExams();
+  $('#view-tasks').innerHTML = renderTasks();
+  renderStatus();
+  updateTabs();
+
   const sc = $('#tl-scroll');
   if (sc) {
     bindTimelineScroll(sc);
-    if (keep?.tl != null) sc.scrollLeft = keep.tl;
+    if (tlLeft != null) sc.scrollLeft = tlLeft;
     else scrollTimelineToToday(false);
     syncTimelineHead();
   }
+  if (fresh) {
+    goToPage(state.view, false);
+    centerStrip(true);
+  }
+}
+
+// ---------- Pager ----------
+
+const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+const pageIndex = (v) => Math.max(0, VIEWS.findIndex(([x]) => x === v));
+let pagerTarget = null;
+
+function updateTabs() {
+  $$('.tab').forEach((t) => t.setAttribute('aria-current', t.dataset.view === state.view ? 'page' : 'false'));
+}
+
+function setView(v) {
+  if (state.view === v) return;
+  state.view = v;
+  store.set('pg.view', v);
+  updateTabs();
+}
+
+function goToPage(v, smooth) {
+  const p = $('#pager');
+  if (!p) return;
+  setView(v);
+  if (!smooth || reducedMotion()) $('#tabs')?.style.setProperty('--ti', pageIndex(v));
+  pagerTarget = smooth && !reducedMotion() ? pageIndex(v) : null;
+  p.scrollTo({ left: pageIndex(v) * p.clientWidth, behavior: pagerTarget == null ? 'auto' : 'smooth' });
+}
+
+function bindPager(p) {
+  p.addEventListener('touchstart', () => { pagerTarget = null; }, { passive: true });
+  p.addEventListener('scroll', () => {
+    const w = p.clientWidth || 1;
+    if (pagerTarget != null) {
+      // A tab tap slides past the pages in between; keep the tapped tab lit.
+      if (Math.abs(p.scrollLeft - pagerTarget * w) < 2) pagerTarget = null;
+      return;
+    }
+    const v = VIEWS[Math.round(p.scrollLeft / w)]?.[0];
+    if (v) setView(v);
+  }, { passive: true });
+  // The glass highlight in the tab bar follows the pages as they slide.
+  p.addEventListener('scroll', () => $('#tabs')?.style.setProperty('--ti', (p.scrollLeft / (p.clientWidth || 1)).toFixed(3)), { passive: true });
+}
+
+window.addEventListener('resize', () => {
+  const p = $('#pager');
+  if (p) p.scrollLeft = pageIndex(state.view) * p.clientWidth;
   const bar = $('.bar');
   if (bar) document.documentElement.style.setProperty('--bar-h', bar.offsetHeight + 'px');
-  if (view === 'today') centerStrip(!keep);
-}
+});
 
 function renderStatus() {
   const el = $('#status');
@@ -290,6 +355,114 @@ function nextExams(fromKey) {
 
 // ---------- Day view ----------
 
+function renderDayPage() {
+  const view = $('#view-today');
+  if (!$('#day-head', view)) view.innerHTML = `
+    <div class="day-head" id="day-head">
+      <div class="day-nav-top">
+        <span class="month" id="day-month"></span>
+        <span class="spacer"></span>
+        <button class="chip-btn" id="day-today" data-action="go-today">Today</button>
+        <label class="icon-btn pick-date" title="Pick a date" aria-label="Pick a date">${ICON.calendar}
+          <input type="date" id="day-pick" data-input="pick-day">
+        </label>
+      </div>
+      <div id="strip-wrap"></div>
+    </div>
+    <div class="day-body" id="day-body"></div>`;
+  // The strip is rebuilt only when its contents change, never on a day change,
+  // and keeps its scroll position, so the days do not jump.
+  const wrap = $('#strip-wrap');
+  const html = renderStrip();
+  if (wrap.dataset.sig !== html) {
+    const left = $('#strip')?.scrollLeft;
+    wrap.innerHTML = html;
+    wrap.dataset.sig = html;
+    const strip = $('#strip');
+    bindStrip(strip);
+    if (left != null) strip.scrollLeft = left;
+  }
+  updateDayHead();
+  $('#day-body').innerHTML = renderToday();
+}
+
+function updateDayHead() {
+  const k = state.day;
+  $('#day-month').textContent = dateOfKey(k).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+  $('#day-today').classList.toggle('is-hidden', k === todayKey());
+  const pick = $('#day-pick');
+  pick.value = k;
+  pick.min = state.plan.days[0]?.key || '';
+  pick.max = state.plan.days.at(-1)?.key || '';
+  markStripDay(k);
+}
+
+function markStripDay(k) {
+  $$('#strip .strip-day').forEach((b) => {
+    const on = b.dataset.day === k;
+    b.classList.toggle('is-selected', on);
+    b.setAttribute('aria-selected', String(on));
+  });
+}
+
+// Choosing a day: from a tap, the date picker, Today, or the strip settling.
+function selectDay(k, { fromStrip = false, smooth = true } = {}) {
+  k = clampDay(k);
+  if (!state.plan.dayByKey[k]) return;
+  const changed = k !== state.day;
+  state.day = k;
+  updateDayHead();
+  if (changed) {
+    const body = $('#day-body');
+    body.innerHTML = renderToday();
+    body.classList.remove('is-turning');
+    void body.offsetWidth;
+    body.classList.add('is-turning');
+  }
+  if (!fromStrip) centerStrip(!smooth);
+}
+
+let stripAuto = false;
+
+function centerStrip(instant) {
+  const strip = $('#strip');
+  const sel = strip?.querySelector(`[data-day="${state.day}"]`);
+  if (!strip || !sel) return;
+  const left = sel.offsetLeft - (strip.clientWidth - sel.offsetWidth) / 2;
+  if (Math.abs(strip.scrollLeft - left) < 1) return;
+  stripAuto = !instant && !reducedMotion();
+  strip.scrollTo({ left, behavior: stripAuto ? 'smooth' : 'auto' });
+}
+
+function centeredDay(strip) {
+  const mid = strip.scrollLeft + strip.clientWidth / 2;
+  let best = null, dist = Infinity;
+  for (const b of strip.children) {
+    const d = Math.abs(b.offsetLeft + b.offsetWidth / 2 - mid);
+    if (d < dist) { dist = d; best = b; }
+  }
+  return best?.dataset.day;
+}
+
+// Swiping the strip moves the selection: the day that snaps to the middle
+// becomes the selected day once the strip comes to rest.
+function bindStrip(strip) {
+  let timer = 0, touching = false;
+  const settle = () => {
+    if (touching) return;
+    if (stripAuto) { stripAuto = false; return; }
+    const k = centeredDay(strip);
+    if (k && k !== state.day) selectDay(k, { fromStrip: true });
+  };
+  strip.addEventListener('touchstart', () => { touching = true; stripAuto = false; }, { passive: true });
+  strip.addEventListener('touchend', () => { touching = false; clearTimeout(timer); timer = setTimeout(settle, 160); }, { passive: true });
+  strip.addEventListener('scroll', () => {
+    if (!stripAuto) markStripDay(centeredDay(strip));
+    clearTimeout(timer);
+    timer = setTimeout(settle, 160);
+  }, { passive: true });
+}
+
 function renderToday() {
   const k = state.day;
   const isToday = k === todayKey();
@@ -310,18 +483,7 @@ function renderToday() {
   const dt = dateOfKey(k);
 
   return `
-    <section class="day-nav">
-      <div class="day-nav-top">
-        <span class="month">${dt.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}</span>
-        <span class="spacer"></span>
-        ${isToday ? '' : '<button class="chip-btn" data-action="go-today">Today</button>'}
-        <label class="icon-btn pick-date" title="Pick a date" aria-label="Pick a date">${ICON.calendar}
-          <input type="date" data-input="pick-day" value="${k}" min="${state.plan.days[0]?.key}" max="${state.plan.days.at(-1)?.key}">
-        </label>
-      </div>
-      ${renderStrip(k)}
-      <h1 class="day-title">${esc(longLabel(k))}</h1>
-    </section>
+    <h1 class="day-title">${esc(longLabel(k))}</h1>
 
     ${renderCountdown(k)}
 
@@ -370,7 +532,7 @@ function renderToday() {
   `;
 }
 
-function renderStrip(selected) {
+function renderStrip() {
   const days = state.plan.days;
   const max = Math.max(1, ...days.map((d) => studyHoursOn(d.key)));
   const examDays = new Set(state.plan.exams.map((e) => e.start));
@@ -381,7 +543,7 @@ function renderStrip(selected) {
         const h = studyHoursOn(d.key);
         const dt = dateOfKey(d.key);
         const openTasks = tasksOn(d.key).some((t) => t.status.status === 'open');
-        return `<button class="strip-day ${d.key === selected ? 'is-selected' : ''} ${d.key === tk ? 'is-today' : ''} ${dt.getDay() % 6 === 0 ? 'is-weekend' : ''}" role="option" aria-selected="${d.key === selected}" data-action="pick-day" data-day="${d.key}" aria-label="${esc(longLabel(d.key))}${h ? `, ${fmtH(h)} hours` : ''}${examDays.has(d.key) ? ', exam' : ''}">
+        return `<button class="strip-day ${d.key === tk ? 'is-today' : ''} ${dt.getDay() % 6 === 0 ? 'is-weekend' : ''}" role="option" aria-selected="false" data-action="pick-day" data-day="${d.key}" aria-label="${esc(longLabel(d.key))}${h ? `, ${fmtH(h)} hours` : ''}${examDays.has(d.key) ? ', exam' : ''}">
           <span class="sd-dow">${esc(dowLabel(d.key).slice(0, 2))}</span>
           <span class="sd-num">${dt.getDate()}</span>
           <span class="sd-load"><span style="width:${Math.round((h / max) * 100)}%"></span></span>
@@ -389,14 +551,6 @@ function renderStrip(selected) {
         </button>`;
       }).join('')}
     </div>`;
-}
-
-function centerStrip(instant) {
-  const strip = $('#strip');
-  const sel = strip?.querySelector('.is-selected');
-  if (!strip || !sel) return;
-  const left = sel.offsetLeft - strip.clientWidth / 2 + sel.offsetWidth / 2;
-  strip.scrollTo({ left, behavior: instant ? 'auto' : 'smooth' });
 }
 
 function renderCountdown(k) {
@@ -1297,12 +1451,7 @@ function toast(msg, undo) {
 
 // ---------- Events ----------
 
-function goDay(k, { fromSwipe = false } = {}) {
-  if (!state.plan.dayByKey[k]) return;
-  state.day = k;
-  render();
-  if (fromSwipe) $('#view')?.classList.add('is-turning');
-}
+const goDay = (k) => selectDay(k);
 
 document.addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-action]');
@@ -1313,12 +1462,9 @@ document.addEventListener('click', (ev) => {
     case 'sign-in': return signIn(store.get('pg.signedIn') === '1');
     case 'refresh': return flush().then(() => refresh());
     case 'menu': return accountMenu();
-    case 'view':
-      state.view = el.dataset.view;
-      store.set('pg.view', state.view);
-      return render({ resetScroll: true });
+    case 'view': return goToPage(el.dataset.view, true);
     case 'pick-day': return goDay(el.dataset.day);
-    case 'open-day': state.view = 'today'; store.set('pg.view', 'today'); state.day = el.dataset.day; return render({ resetScroll: true });
+    case 'open-day': selectDay(el.dataset.day, { smooth: false }); return goToPage('today', true);
     case 'go-today': return goDay(clampDay(todayKey()));
     case 'hours': return item && setHours(item, el.dataset.day, toNumber(item.cells[el.dataset.day]) + Number(el.dataset.delta));
     case 'edit-hours': return item && editHours(item, el.dataset.day);
@@ -1372,25 +1518,6 @@ document.addEventListener('submit', (ev) => {
 const dialog = $('#dialog');
 dialog.addEventListener('click', (ev) => { if (ev.target === dialog) dialog.close(); });
 dialog.addEventListener('close', () => { if (state.dirty) { state.dirty = false; render(); } });
-
-// Swipe left or right on the day view to change day.
-let touch = null;
-document.addEventListener('touchstart', (ev) => {
-  if (state.view !== 'today' || !state.plan || ev.touches.length !== 1) return;
-  if (ev.target.closest('.strip, input, textarea, dialog')) return;
-  touch = { x: ev.touches[0].clientX, y: ev.touches[0].clientY, t: Date.now() };
-}, { passive: true });
-document.addEventListener('touchend', (ev) => {
-  if (!touch) return;
-  const dx = ev.changedTouches[0].clientX - touch.x;
-  const dy = ev.changedTouches[0].clientY - touch.y;
-  const fast = Date.now() - touch.t < 600;
-  touch = null;
-  if (!fast || Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx) * 0.6) return;
-  const days = state.plan.days;
-  const i = days.findIndex((d) => d.key === state.day) + (dx < 0 ? 1 : -1);
-  if (days[i]) goDay(days[i].key, { fromSwipe: true });
-}, { passive: true });
 
 document.addEventListener('keydown', (ev) => {
   if (!state.plan || dialog.open) return;
