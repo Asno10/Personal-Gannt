@@ -635,15 +635,26 @@ a, .link, .add-btn, .more summary, .tl-more th button { color: var(--accent); }
 
 /* Countdown as a widget card */
 .countdown {
-  background: var(--panel); color: var(--ink);
-  border-left: 0; border-radius: var(--radius); padding: 16px 18px;
+  display: block; background: var(--panel); color: var(--ink);
+  border-left: 0; border-radius: var(--radius); padding: 14px 16px 6px; margin-bottom: 20px;
 }
-.cd-num { font-family: var(--font-c); color: var(--signal); }
-.cd-num small { font-family: var(--font-c); color: var(--signal); }
-.cd-label { color: var(--ink-2); opacity: 1; font-size: 15px; }
-.cd-exam { font-size: 17px; }
-.cd-later { border-top: var(--hair) solid var(--rule); font-size: 15px; }
-.cd-later span { color: var(--ink-2); opacity: 1; }
+.cd-label { margin: 0 0 8px; font: 600 13px/1.2 var(--font); color: var(--ink-2); opacity: 1; letter-spacing: 0; }
+.cd-main { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 12px; }
+.cd-lead { display: grid; gap: 8px; min-width: 0; }
+.cd-exam { display: grid; gap: 2px; font-size: inherit; line-height: 1.25; }
+.cd-exam strong { display: flex; align-items: center; gap: 8px; font: 600 20px/1.2 var(--font); }
+.cd-exam strong::before { content: ''; flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--c); }
+.cd-exam span { margin-left: 18px; font-size: 15px; color: var(--ink-2); }
+.cd-num { flex: none; text-align: right; line-height: 1; font: inherit; color: inherit; letter-spacing: 0; }
+.cd-num b { display: block; font: 700 44px/0.95 var(--font-c); color: var(--signal); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.cd-num b.is-word { font-size: 28px; }
+.cd-num small { display: block; margin-top: 2px; font: 500 13px/1.2 var(--font); color: var(--ink-2); }
+.cd-later { list-style: none; margin: 0; padding: 0; border-top: var(--hair) solid var(--rule); display: block; font-size: 15px; }
+.cd-later li { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px; border-bottom: var(--hair) solid var(--rule); }
+.cd-later li:last-child { border-bottom: 0; }
+.cd-sub { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--ink); opacity: 1; }
+.cd-sub::before { content: ''; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.cd-in { flex: none; color: var(--ink-2); font-variant-numeric: tabular-nums; opacity: 1; }
 
 /* Controls */
 .btn { border-radius: 999px; font-weight: 600; font-size: 17px; }

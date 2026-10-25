@@ -1,6 +1,6 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=6';
-import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=6';
+import * as api from './sheets.js?v=7';
+import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=7';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -621,22 +621,34 @@ function renderStrip() {
     </div>`;
 }
 
+// Widget-style card: a small label, the next exam on the left with its
+// countdown on the right, then the following exams as a short list.
 function renderCountdown(k) {
   const exams = nextExams(k);
   if (!exams.length) return '';
   const todays = exams.filter((e) => e.start === k);
-  const head = todays[0] || exams[0];
-  const n = daysBetween(k, head.start);
-  const later = exams.filter((e) => !todays.includes(e) && e !== head).slice(0, 3);
-  const lead = (todays.length ? todays : [head]);
+  const lead = todays.length ? todays : [exams[0]];
+  const n = daysBetween(k, lead[0].start);
+  const later = exams.filter((e) => !lead.includes(e)).slice(0, 3);
+  const whenOf = (e) => [e.start === k ? 'Today' : `${dowLabel(e.start)} ${shortLabel(e.start)}`, e.time].filter(Boolean).join(', ');
+  const left = (e) => { const d = daysBetween(k, e.start); return d === 0 ? 'Today' : d === 1 ? 'Tomorrow' : `${d} days`; };
   return `
-    <section class="countdown" style="--c:${subjectVar(head.subject)}">
-      <div class="cd-num">${n === 0 ? 'Today' : `${n}<small>${n === 1 ? 'day' : 'days'}</small>`}</div>
-      <div class="cd-body">
-        <div class="cd-label">${n === 0 ? (todays.length > 1 ? 'Exams today' : 'Exam today') : 'until your next exam'}</div>
-        ${lead.map((e) => `<div class="cd-exam"><strong>${esc(e.subject)}</strong> ${esc(relDay(e.start) === 'Today' ? '' : dowLabel(e.start) + ' ' + shortLabel(e.start))}${e.time ? ` at ${esc(e.time)}` : ''}</div>`).join('')}
+    <section class="countdown">
+      <p class="cd-label">${todays.length ? (todays.length > 1 ? 'Exams today' : 'Exam today') : 'Next exam'}</p>
+      <div class="cd-main">
+        <div class="cd-lead">
+          ${lead.map((e) => `
+            <div class="cd-exam" style="--c:${subjectVar(e.subject)}">
+              <strong>${esc(e.subject)}</strong>
+              <span>${esc(whenOf(e))}</span>
+            </div>`).join('')}
+        </div>
+        <div class="cd-num" aria-label="${n === 0 ? 'Today' : plural(n, 'day') + ' left'}">${n === 0 ? '<b class="is-word">Today</b>' : `<b>${n}</b><small>${n === 1 ? 'day' : 'days'}</small>`}</div>
       </div>
-      ${later.length ? `<div class="cd-later">${later.map((e) => `<span><b>${daysBetween(k, e.start)} d</b> ${esc(e.subject)}</span>`).join('')}</div>` : ''}
+      ${later.length ? `
+        <ul class="cd-later">
+          ${later.map((e) => `<li style="--c:${subjectVar(e.subject)}"><span class="cd-sub">${esc(e.subject)}</span><span class="cd-in">${esc(left(e))}</span></li>`).join('')}
+        </ul>` : ''}
     </section>`;
 }
 
