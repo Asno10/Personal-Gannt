@@ -43,6 +43,7 @@ export function toNumber(v) {
 
 function classify(title) {
   const t = title.toLowerCase();
+  if (/\blog\b|actual hours/.test(t)) return 'log';
   if (/exercise|workout|training|gym/.test(t)) return 'exercise';
   if (/todoist|to-?do|tasks?\b/.test(t)) return 'tasks';
   if (/calendar|events?\b|deadline|holiday/.test(t)) return 'events';
@@ -194,7 +195,10 @@ export function parseGantt(rows, formulas = []) {
     return { ...e, time };
   });
 
-  return { title, subtitle, header: C, days, dayByKey, sections, study, exams, summary, totalsRow, resolveDate };
+  // Study log: one row per subject holding the hours actually studied each day.
+  const logs = itemsOf('log').filter((i) => i.subject);
+
+  return { title, subtitle, header: C, days, dayByKey, sections, study, exams, logs, summary, totalsRow, resolveDate };
 }
 
 export function parseDailyPlan(rows, formulas = []) {

@@ -1,6 +1,37 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#16202a"/>
-  <rect x="12" y="16" width="22" height="7" rx="2" fill="#7c9cf0"/>
-  <rect x="22" y="28.5" width="24" height="7" rx="2" fill="#3cc4b4"/>
-  <rect x="30" y="41" width="20" height="7" rx="2" fill="#f0a202"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#26397a"/>
+      <stop offset="1" stop-color="#0a0f1c"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.62" cy="0.18" r="0.7">
+      <stop offset="0" stop-color="#f5b53a" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#f5b53a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="b1" x1="0" x2="1"><stop offset="0" stop-color="#5b7ff0"/><stop offset="1" stop-color="#8fa9ff"/></linearGradient>
+    <linearGradient id="b2" x1="0" x2="1"><stop offset="0" stop-color="#17a898"/><stop offset="1" stop-color="#4fe0cc"/></linearGradient>
+    <linearGradient id="b3" x1="0" x2="1"><stop offset="0" stop-color="#8a5ae0"/><stop offset="1" stop-color="#b996ff"/></linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="14"/></filter>
+    <filter id="shadow" x="-20%" y="-40%" width="140%" height="200%"><feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#000" flood-opacity="0.35"/></filter>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#halo)"/>
+  <g stroke="#ffffff" stroke-opacity="0.06" stroke-width="4">
+    <path d="M176 120V904M304 120V904M432 120V904M560 120V904M688 120V904M816 120V904"/>
+  </g>
+  <!-- today line -->
+  <g>
+    <path d="M640 190V900" stroke="#f5b53a" stroke-width="30" stroke-linecap="round" filter="url(#glow)" opacity="0.8"/>
+    <path d="M640 190V900" stroke="#ffc94d" stroke-width="18" stroke-linecap="round"/>
+    <path d="M640 96l64 64-64 64-64-64z" fill="#ffc94d"/>
+  </g>
+  <!-- bars -->
+  <g filter="url(#shadow)">
+    <rect x="120" y="250" width="452" height="152" rx="76" fill="url(#b1)"/>
+    <rect x="300" y="462" width="500" height="152" rx="76" fill="url(#b2)"/>
+    <rect x="500" y="674" width="404" height="152" rx="76" fill="url(#b3)"/>
+  </g>
+  <!-- first bar done -->
+  <circle cx="496" cy="326" r="50" fill="#ffffff"/>
+  <path d="M471 328l17 17 34-36" fill="none" stroke="#4a6fe0" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

@@ -135,3 +135,13 @@ export function insertRowBelow(sheetId, afterRow) {
     }),
   });
 }
+
+// Deletes one row (1-based).
+export function deleteRow(sheetId, row) {
+  return call(':batchUpdate', {
+    method: 'POST',
+    body: JSON.stringify({
+      requests: [{ deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: row - 1, endIndex: row } } }],
+    }),
+  });
+}

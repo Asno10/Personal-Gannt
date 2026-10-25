@@ -12,6 +12,6 @@ The site holds code only. The sheet is read in the browser after Google sign-in,
 
 ## How the sheet is read
 
-The parser finds columns by their header labels (Phase, Subject, Task, Start, End, Hours) and the day columns by their dates, and groups rows by the single-cell section titles (Exams, Todoist, Calendar events, Fixed commitments, Exercise plan). New rows, sections and days need no code changes. Cells holding formulas are never overwritten.
+The parser finds columns by their header labels (Phase, Subject, Task, Start, End, Hours) and the day columns by their dates, and groups rows by the single-cell section titles (Study log, Exams, Todoist, Calendar events, Fixed commitments, Exercise plan). The Study log section holds the hours actually studied, one row per subject, and is what the Exams page counts as studied. New rows, sections and days need no code changes. Cells holding formulas are never overwritten.
 
 Marking a task done rewrites its status note, for example `(open, scheduled Sat 24 Oct)` becomes `(done 24 Oct)`. Todoist itself is not updated.

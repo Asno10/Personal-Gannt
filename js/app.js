@@ -1,6 +1,6 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js';
-import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js';
+import * as api from './sheets.js?v=3';
+import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=3';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -263,6 +263,22 @@ const taskDue = (t) => plannedDays(t)[0] || t.start || null;
 const tasksOn = (k) => allTasks().filter((t) => (plannedDays(t).length ? plannedDays(t).includes(k) : t.start === k));
 const isOverdue = (t) => t.status.status === 'open' && taskDue(t) && taskDue(t) < todayKey();
 
+// The days a task is on: its X cells, or else its Start to End dates.
+function currentDays(t) {
+  const xs = plannedDays(t);
+  if (xs.length) return xs;
+  if (!t.start) return [];
+  const out = [];
+  for (let k = t.start, n = 0; k <= (t.end || t.start) && n < 62; k = addDays(k, 1), n++) out.push(k);
+  return out;
+}
+
+// Study log: hours actually studied, one sheet row per subject.
+const logRowFor = (subject) => (state.plan.logs || []).find((l) => l.subject === subject);
+const loggedOn = (subject, k) => toNumber(logRowFor(subject)?.cells[k]);
+const loggedOnDay = (k) => (state.plan.logs || []).reduce((n, l) => n + toNumber(l.cells[k]), 0);
+const loggedUpTo = (subject, last) => Object.entries(logRowFor(subject)?.cells || {}).filter(([d]) => d <= last).reduce((n, [, v]) => n + toNumber(v), 0);
+
 function coversDay(item, k) {
   if (item.cells[k]) return true;
   return item.start && item.end ? item.start <= k && k <= item.end : item.start === k;
@@ -277,8 +293,12 @@ function nextExams(fromKey) {
 function renderToday() {
   const k = state.day;
   const isToday = k === todayKey();
-  const study = studyOn(k);
-  const total = study.reduce((n, s) => n + s.hours, 0);
+  const canLog = k <= todayKey();
+  const planned = studyOn(k);
+  const total = planned.reduce((n, s) => n + s.hours, 0);
+  // On past days and today, subjects studied without a plan show up too.
+  const study = [...planned, ...(canLog ? state.plan.study.filter((s) => !planned.some((x) => x.item === s) && loggedOn(s.subject, k) > 0).map((item) => ({ item, hours: 0 })) : [])];
+  const logged = canLog ? loggedOnDay(k) : 0;
   const daily = state.daily.byKey[k];
   const tasks = tasksOn(k);
   const open = tasks.filter((t) => t.status.status === 'open');
@@ -308,14 +328,16 @@ function renderToday() {
     <section class="block">
       <div class="block-head">
         <h2>Study</h2>
-        <span class="block-meta">${total ? fmtH(total) + ' h planned' : 'Nothing planned'}</span>
+        <span class="block-meta">${total ? fmtH(total) + ' h planned' : 'Nothing planned'}${canLog && (total || logged) ? `, <b class="${logged >= total && logged ? 'is-good' : ''}">${fmtH(logged)} h studied</b>` : ''}</span>
       </div>
       <ul class="study-list">${study.map(({ item, hours }) => studyRow(item, hours, k)).join('')}</ul>
       ${daily?.studyNote.value && !/^none/i.test(daily.studyNote.value) ? `<p class="note">${esc(daily.studyNote.value)}</p>` : ''}
       ${others.length ? `
         <div class="add-row">
-          <span class="add-label">Add a subject</span>
-          <div class="chips">${others.map((s) => `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="hours" data-row="${s.row}" data-day="${k}" data-delta="1" aria-label="Add 1 hour of ${esc(s.subject)}">${esc(s.subject)}</button>`).join('')}</div>
+          <span class="add-label">${canLog ? 'Log time for another subject' : 'Add a subject'}</span>
+          <div class="chips">${others.map((s) => canLog
+            ? `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="log-hours" data-subject="${esc(s.subject)}" data-day="${k}" aria-label="Log time for ${esc(s.subject)}">${esc(s.subject)}</button>`
+            : `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="hours" data-row="${s.row}" data-day="${k}" data-delta="1" aria-label="Add 1 hour of ${esc(s.subject)}">${esc(s.subject)}</button>`).join('')}</div>
         </div>` : ''}
     </section>
 
@@ -400,10 +422,16 @@ function studyRow(item, hours, k) {
   return `
     <li class="study" style="--c:${subjectVar(item.subject)}">
       <span class="study-swatch" aria-hidden="true"></span>
-      <button class="study-name" data-action="edit-hours" data-row="${item.row}" data-day="${k}">${esc(item.subject)}</button>
+      <div class="study-main">
+        <button class="study-name" data-action="edit-hours" data-row="${item.row}" data-day="${k}">${esc(item.subject)}</button>
+        ${k <= todayKey() ? (() => {
+          const l = loggedOn(item.subject, k);
+          return `<button class="log-btn ${l ? 'is-logged' : ''} ${l && l >= hours ? 'is-good' : ''}" data-action="log-hours" data-subject="${esc(item.subject)}" data-day="${k}">${l ? `${ICON.check}Studied ${fmtH(l)} h` : `${ICON.plus}Log studied time`}</button>`;
+        })() : ''}
+      </div>
       <span class="stepper">
         <button class="step" data-action="hours" data-row="${item.row}" data-day="${k}" data-delta="-0.5" aria-label="Half an hour less ${esc(item.subject)}">${ICON.minus}</button>
-        <button class="study-hours" data-action="edit-hours" data-row="${item.row}" data-day="${k}" aria-label="${fmtH(hours)} hours, tap to change">${fmtH(hours)}<small>h</small></button>
+        <button class="study-hours" data-action="edit-hours" data-row="${item.row}" data-day="${k}" aria-label="${fmtH(hours)} hours planned, tap to change">${fmtH(hours)}<small>h</small></button>
         <button class="step" data-action="hours" data-row="${item.row}" data-day="${k}" data-delta="0.5" aria-label="Half an hour more ${esc(item.subject)}">${ICON.plus}</button>
       </span>
     </li>`;
@@ -478,18 +506,21 @@ function renderTimeline() {
       }).join('')}
     </tr>`;
 
-  const section = (id, name, meta, rows) => {
+  // Section title rows keep one cell per day, so today and weekend shading runs
+  // unbroken down the chart. A closed section shows a summary in those cells.
+  const section = (id, name, meta, rows, preview) => {
     if (!rows.length) return '';
     const shut = state.collapsed.has(id);
     return `
-      <tr class="tl-section">
+      <tr class="tl-section ${shut ? 'is-shut' : ''}">
         <th class="tl-name" scope="rowgroup">
           <button data-action="toggle-section" data-key="${id}" aria-expanded="${!shut}">${ICON[shut ? 'right' : 'down']}<span>${esc(name)}</span><span class="tl-count">${esc(meta)}</span></button>
         </th>
-        <td colspan="${days.length}"></td>
+        ${days.map((d) => `<td class="${colCls(d.key)}">${shut && preview ? preview(d.key) : ''}</td>`).join('')}
       </tr>
       ${shut ? '' : rows.join('')}`;
   };
+  const blankCells = () => days.map((d) => `<td class="${colCls(d.key)}"></td>`).join('');
 
   const line = ({ cls = '', color = '', name, sub = '', action = '', cells }) => `
     <tr class="tl-row ${cls}" ${color ? `style="--c:${color}"` : ''}>
@@ -508,10 +539,12 @@ function renderTimeline() {
       const h = toNumber(s.cells[k]);
       const isExam = exam?.start === k;
       const run = keys[0] && k > keys[0] && k < runEnd;
+      const lg = k <= tk ? loggedOn(s.subject, k) : 0;
+      const badge = lg ? `<span class="tl-log ${lg >= h ? 'is-good' : ''}">${fmtH(lg)}</span>` : '';
       const inner = isExam
         ? `<span class="tl-exam-pill">Exam${exam.time ? `<small>${esc(exam.time)}</small>` : ''}</span>`
         : h ? `<span class="tl-h" style="--a:${Math.round(18 + 40 * (h / maxH))}%">${fmtH(h)}</span>` : '';
-      return `<td class="${colCls(k)} ${run && !h && !isExam ? 'is-run' : ''}"><button class="tl-cell" data-action="edit-hours" data-row="${s.row}" data-day="${k}" aria-label="${esc(s.subject)}, ${esc(longLabel(k))}: ${isExam ? 'exam, ' : ''}${h ? fmtH(h) + ' hours' : 'no study'}">${inner}</button></td>`;
+      return `<td class="${colCls(k)} ${run && !h && !isExam ? 'is-run' : ''}"><button class="tl-cell" data-action="edit-hours" data-row="${s.row}" data-day="${k}" aria-label="${esc(s.subject)}, ${esc(longLabel(k))}: ${isExam ? 'exam, ' : ''}${h ? fmtH(h) + ' hours planned' : 'no study planned'}${lg ? `, ${fmtH(lg)} studied` : ''}">${inner}${badge}</button></td>`;
     }).join('');
     return line({ cls: 'tl-study', color: subjectVar(s.subject), name: s.subject, sub: `${fmtH(total)} h${exam ? `, exam ${shortLabel(exam.start)}` : ''}`, cells });
   });
@@ -530,7 +563,7 @@ function renderTimeline() {
     const cells = days.map((d) => {
       const on = pd.length ? pd.includes(d.key) : t.start === d.key;
       const inner = on ? (isDone ? `<span class="tl-done">${ICON.check}</span>` : '<span class="tl-dot"></span>') : '';
-      return `<td class="${colCls(d.key)}"><button class="tl-cell" data-action="plan-task" data-row="${t.row}" data-day="${d.key}" aria-label="${esc(t.status.title)}, ${esc(longLabel(d.key))}: ${on ? 'planned, tap to remove' : 'tap to plan'}">${inner}</button></td>`;
+      return `<td class="${colCls(d.key)}"><button class="tl-cell" data-action="task-day" data-row="${t.row}" data-day="${d.key}" aria-label="${esc(t.status.title)}, ${esc(longLabel(d.key))}: ${on ? 'planned' : 'not planned'}">${inner}</button></td>`;
     }).join('');
     const late = isOverdue(t);
     return line({
@@ -543,7 +576,7 @@ function renderTimeline() {
   const taskRows = open.map(taskLine);
   if (done.length) {
     taskRows.push(`
-      <tr class="tl-more"><th class="tl-name" scope="row"><button data-action="toggle-done-tl">${state.tlShowDone ? 'Hide' : 'Show'} done (${done.length})</button></th><td colspan="${days.length}"></td></tr>`);
+      <tr class="tl-more"><th class="tl-name" scope="row"><button data-action="toggle-done-tl">${state.tlShowDone ? 'Hide' : 'Show'} done (${done.length})</button></th>${blankCells()}</tr>`);
     if (state.tlShowDone) taskRows.push(...done.map(taskLine));
   }
 
@@ -586,17 +619,46 @@ function renderTimeline() {
   const cols = `<colgroup><col class="tl-col-name">${days.map(() => '<col class="tl-col-day">').join('')}</colgroup>`;
 
   const studyTotal = state.plan.study.reduce((n, s) => n + Object.values(s.cells).reduce((m, v) => m + toNumber(v), 0), 0);
+  // What a closed section still shows on each day.
+  const preview = {
+    study(k) {
+      const h = studyHoursOn(k);
+      const ex = state.plan.exams.some((e) => e.start === k);
+      return ex ? '<span class="tl-exam-pill tl-mini">Exam</span>' : h ? `<span class="tl-pv-h">${fmtH(h)}</span>` : '';
+    },
+    tasks(k) {
+      const on = tasksOn(k);
+      const o = on.filter((t) => t.status.status === 'open').length;
+      if (o) return `<button class="tl-cell" data-action="open-day" data-day="${k}" aria-label="${plural(o, 'open task')} on ${esc(longLabel(k))}"><span class="tl-dot ${o > 1 ? 'is-many' : ''}">${o > 1 ? o : ''}</span></button>`;
+      return on.length ? `<span class="tl-done is-faint">${ICON.check}</span>` : '';
+    },
+    events(k) {
+      const ev = ofType('events').filter((e) => coversDay(e, k));
+      return ev.length ? `<span class="tl-bar ${ev.some((e) => /deadline/i.test(e.subject) || e.cells[k] === '!') ? 'is-alert' : ''}"></span>` : '';
+    },
+    exercise(k) {
+      const ab = exerciseAbbr(state.daily.byKey[k]?.exercise.value);
+      return ab ? `<span class="tl-ex">${esc(ab)}</span>` : '';
+    },
+    commitments(k) {
+      const vs = ofType('commitments').map((c) => c.cells[k]).filter(Boolean);
+      if (!vs.length) return '';
+      return `<span class="tl-mark ${vs.includes('!') ? 'is-alert' : ''}">${vs.includes('!') ? '!' : vs.some((v) => /^c$/i.test(v)) ? 'Class' : esc(vs[0])}</span>`;
+    },
+  };
+
   const body = [
-    section('study', 'Study', `${fmtH(studyTotal)} h`, [...study, ...lonelyExams]),
-    section('tasks', 'Tasks', `${open.length} open`, taskRows),
-    section('events', 'Calendar', plural(eventRows.length, 'event'), eventRows),
-    section('exercise', 'Exercise', '', exerciseRows),
-    section('commitments', 'Fixed commitments', '', commitRows),
+    section('study', 'Study', `${fmtH(studyTotal)} h`, [...study, ...lonelyExams], preview.study),
+    section('tasks', 'Tasks', `${open.length} open`, taskRows, preview.tasks),
+    section('events', 'Calendar', plural(eventRows.length, 'event'), eventRows, preview.events),
+    section('exercise', 'Exercise', '', exerciseRows, preview.exercise),
+    section('commitments', 'Fixed commitments', '', commitRows, preview.commitments),
   ].join('');
 
   return `
     <div class="tl-legend" aria-label="Legend">
-      <span><i class="lg-h"></i>Study hours</span>
+      <span><i class="lg-h"></i>Planned hours</span>
+      <span><i class="tl-log is-good lg-log">2</i>Studied</span>
       <span><i class="lg-exam">Exam</i>Exam day</span>
       <span><i class="tl-dot"></i>Task planned</span>
       <span><i class="lg-bar"></i>Event</span>
@@ -607,7 +669,7 @@ function renderTimeline() {
     <div class="tl-scroll" id="tl-scroll">
       <table class="tl" style="--n:${days.length}">${cols}<tbody>${body}</tbody></table>
     </div>
-    <p class="tl-tip">Tap a cell to change it, or a date to open that day. The small number under each date is that day's study total.</p>`;
+    <p class="tl-tip">Tap a study cell to log what you studied or change the plan, a task cell to plan, move or finish it, or a date to open that day. The number under each date is that day's planned study total.</p>`;
 }
 
 // The timeline is two parts: the date row, pinned under the top bar, and the
@@ -621,6 +683,8 @@ function syncTimelineHead() {
 
 function bindTimelineScroll(sc) {
   sc.addEventListener('scroll', syncTimelineHead, { passive: true });
+  // A long press on the chart should do nothing, not select text or open a menu.
+  for (const el of [sc, $('#tl-head')]) el?.addEventListener('contextmenu', (ev) => ev.preventDefault());
   // A sideways swipe on the date row moves the grid too.
   const hd = $('#tl-head');
   if (!hd) return;
@@ -635,7 +699,27 @@ function bindTimelineScroll(sc) {
     if (!axis && Math.hypot(dx, dy) > 8) axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
     if (axis === 'x') sc.scrollLeft = left0 - dx;
   }, { passive: true });
-  hd.addEventListener('touchend', () => { x0 = null; }, { passive: true });
+  let v = 0, lastX = 0, lastT = 0, raf = 0;
+  hd.addEventListener('touchstart', (ev) => { cancelAnimationFrame(raf); v = 0; lastX = ev.touches[0]?.clientX || 0; lastT = performance.now(); }, { passive: true });
+  hd.addEventListener('touchmove', (ev) => {
+    const x = ev.touches[0].clientX, t = performance.now();
+    if (t > lastT) v = 0.8 * ((lastX - x) / (t - lastT)) + 0.2 * v;
+    lastX = x; lastT = t;
+  }, { passive: true });
+  hd.addEventListener('touchend', () => {
+    const glide = axis === 'x';
+    x0 = null;
+    if (!glide || Math.abs(v) < 0.05) return;
+    // Let the grid coast after a sideways flick on the date row.
+    let prev = performance.now();
+    const step = (t) => {
+      const dt = t - prev; prev = t;
+      sc.scrollLeft += v * dt;
+      v *= Math.pow(0.995, dt);
+      if (Math.abs(v) > 0.02) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+  }, { passive: true });
   hd.addEventListener('wheel', (ev) => {
     const d = Math.abs(ev.deltaX) > Math.abs(ev.deltaY) ? ev.deltaX : ev.shiftKey ? ev.deltaY : 0;
     if (d) { sc.scrollLeft += d; ev.preventDefault(); }
@@ -667,13 +751,18 @@ function examCard(e, tk) {
   const study = state.plan.study.find((s) => s.subject === e.subject);
   const active = study ? state.plan.days.filter((d) => d.key <= e.start).map((d) => ({ k: d.key, h: toNumber(study.cells[d.key]) })).filter((x) => x.h > 0) : [];
   const total = active.reduce((n, x) => n + x.h, 0);
-  const behind = active.filter((x) => x.k < tk).reduce((n, x) => n + x.h, 0);
-  const firstK = active[0]?.k;
+  // Planned up to yesterday, against what was actually logged (up to the exam).
+  const dueSoFar = active.filter((x) => x.k < tk).reduce((n, x) => n + x.h, 0);
+  const studied = loggedUpTo(e.subject, e.start);
+  const logCells = Object.entries(logRowFor(e.subject)?.cells || {}).filter(([d, v]) => d <= e.start && toNumber(v) > 0).map(([d]) => d);
+  const firstK = [active[0]?.k, ...logCells].filter(Boolean).sort()[0];
   const span = firstK ? state.plan.days.filter((d) => d.key >= firstK && d.key <= e.start) : [];
-  const max = Math.max(1, ...active.map((x) => x.h));
+  const max = Math.max(1, ...span.map((d) => Math.max(toNumber(study?.cells[d.key]), loggedOn(e.subject, d.key))));
   const n = daysBetween(tk, e.start);
   const rooms = (e.task.match(/rooms?\s+([\d,\s]+)/i) || [])[1];
-  const pct = total ? Math.round((behind / total) * 100) : 0;
+  const pct = total ? Math.min(100, Math.round((studied / total) * 100)) : 0;
+  const gap = dueSoFar - studied;
+  const pace = !study || n < 0 ? '' : gap > 0.25 ? `<span class="pace is-behind">${fmtH(gap)} h behind plan</span>` : dueSoFar > 0 || studied > 0 ? `<span class="pace is-good">${gap < -0.25 ? `${fmtH(-gap)} h ahead of plan` : 'On plan'}</span>` : '';
   return `
     <article class="exam" style="--c:${subjectVar(e.subject)}">
       <div class="exam-count">${n < 0 ? 'Done' : n === 0 ? 'Today' : `${n}<small>${n === 1 ? 'day' : 'days'}</small>`}</div>
@@ -681,14 +770,20 @@ function examCard(e, tk) {
       <p class="exam-when">${esc(longLabel(e.start))}${e.time ? ' at ' + esc(e.time) : ''}${rooms ? `<br>Rooms ${esc(rooms.trim())}` : ''}</p>
       ${!rooms && e.task !== e.subject ? `<p class="exam-when">${esc(e.task)}</p>` : ''}
       ${study ? `
-        <div class="progress" role="img" aria-label="${fmtH(behind)} of ${fmtH(total)} planned hours done">
+        <div class="progress" role="img" aria-label="${fmtH(studied)} of ${fmtH(total)} planned hours studied">
           <div class="progress-bar"><span style="width:${pct}%"></span></div>
-          <div class="progress-text"><strong>${fmtH(behind)}</strong> of ${fmtH(total)} h studied, <strong>${fmtH(total - behind)} h</strong> to go</div>
+          <div class="progress-text"><strong>${fmtH(studied)}</strong> of ${fmtH(total)} h studied, <strong>${fmtH(Math.max(0, total - studied))} h</strong> to go ${pace}</div>
         </div>
         <div class="spark" aria-hidden="true">
-          ${span.map((d) => { const h = toNumber(study.cells[d.key]); return `<span class="spark-bar ${d.key < tk ? 'is-past' : ''} ${d.key === tk ? 'is-today' : ''}" style="height:${h ? Math.max(8, (h / max) * 100) : 2}%" title="${esc(shortLabel(d.key))}: ${fmtH(h)} h"></span>`; }).join('')}
+          ${span.map((d) => {
+            const h = toNumber(study.cells[d.key]);
+            const l = d.key <= tk ? loggedOn(e.subject, d.key) : 0;
+            const pctH = (x) => (x ? Math.max(8, (x / max) * 100) : 0);
+            return `<span class="spark-day ${d.key === tk ? 'is-today' : ''}" title="${esc(shortLabel(d.key))}: ${fmtH(h)} h planned${d.key <= tk ? `, ${fmtH(l)} h studied` : ''}"><i class="spark-plan" style="height:${h ? pctH(h) : 2}%"></i>${l ? `<i class="spark-done" style="height:${pctH(l)}%"></i>` : ''}</span>`;
+          }).join('')}
         </div>
-        <div class="spark-axis"><span>${firstK ? esc(shortLabel(firstK)) : ''}</span><span>Exam</span></div>` : ''}
+        <div class="spark-axis"><span>${firstK ? esc(shortLabel(firstK)) : ''}</span><span class="spark-key"><i class="k-plan"></i>Planned <i class="k-done"></i>Studied</span><span>Exam</span></div>
+        ${n >= 0 ? `<button class="add-btn" data-action="log-hours" data-subject="${esc(e.subject)}" data-day="${tk}">${ICON.plus}Log studied time today</button>` : ''}` : ''}
     </article>`;
 }
 
@@ -753,6 +848,50 @@ function setHours(item, k, value) {
   queue([{ range: cellRef(item, k), value: v || '' }]);
 }
 
+async function setLogged(subject, k, value) {
+  const v = Math.min(16, Math.max(0, Math.round(value * 4) / 4));
+  let row = logRowFor(subject);
+  if (!row) {
+    if (!v) return;
+    row = await addLogRow(subject);
+    if (!row) return;
+  }
+  if (v === toNumber(row.cells[k])) return;
+  if (v) row.cells[k] = String(v); else delete row.cells[k];
+  render();
+  queue([{ range: cellRef(row, k), value: v || '' }], { delay: 300 });
+  toast(v ? `${subject}: ${fmtH(v)} h studied ${relDay(k) === 'Today' ? 'today' : 'on ' + relDay(k)}` : `Cleared ${subject} for ${relDay(k)}`);
+}
+
+// Adds a log row for a subject that has none yet, below the last one.
+async function addLogRow(subject) {
+  const logs = state.plan.logs || [];
+  if (!logs.length) { toast('The sheet has no Study log section yet.'); return null; }
+  const last = logs[logs.length - 1];
+  const row = last.row + 1;
+  await flush();
+  setSync('saving');
+  try {
+    await api.insertRowBelow(state.raw.sheetIds[CONFIG.sheets.gantt], last.row);
+    const days = state.plan.days;
+    const ups = [
+      { range: colRef('phase', row), value: last.phase || 'Log' },
+      { range: colRef('subject', row), value: subject },
+      { range: colRef('task', row), value: last.task || 'Actual hours' },
+    ];
+    if (state.plan.header.hours >= 0 && days.length) ups.push({ range: colRef('hours', row), value: `=SUM(${colLetter(days[0].col)}${row}:${colLetter(days.at(-1).col)}${row})` });
+    await api.writeCells(ups);
+    setSync('saved');
+  } catch (e) {
+    if (e instanceof api.AuthError) { renderSignIn('Your session ended. Sign in and log the time again.'); return null; }
+    setSync('error');
+    toast(`Not saved. ${e.message}`);
+    return null;
+  }
+  await refresh();
+  return logRowFor(subject);
+}
+
 function setTaskStatus(item, next, { announce = true } = {}) {
   const st = item.status;
   if (st.status === next) return;
@@ -775,43 +914,44 @@ function setTaskStatus(item, next, { announce = true } = {}) {
 
 const toggleTask = (item) => setTaskStatus(item, item.status.status === 'done' ? 'open' : 'done');
 
-function datesUpdates(item, days) {
-  if (item.lockedDates || !days.length) return [];
-  return [
-    { range: colRef('start', item.row), value: days[0] },
-    { range: colRef('end', item.row), value: days[days.length - 1] },
-  ];
-}
-
-function planTask(item, k) {
-  const had = /x/i.test(item.cells[k] || '');
-  const before = { ...item.cells };
-  const ups = [{ range: cellRef(item, k), value: had ? '' : 'X' }];
-  if (had) delete item.cells[k]; else item.cells[k] = 'X';
-  const days = plannedDays(item);
-  ups.push(...datesUpdates(item, days));
-  if (days.length && !item.lockedDates) { item.start = days[0]; item.end = days.at(-1); }
-  render();
-  queue(ups, { delay: 300 });
-  toast(had ? `Removed from ${relDay(k)}` : `Planned for ${relDay(k)}`, () => {
-    item.cells = before;
-    render();
-    queue([{ range: cellRef(item, k), value: had ? 'X' : '' }, ...datesUpdates(item, plannedDays(item))], { delay: 0 });
-  });
-}
-
-function moveTask(item, k) {
+// Puts a task on exactly these days: X cells for the days in the chart, and
+// Start and End set to the first and last day (both cleared for no days), so a
+// removed day can never come back from a stale Start date.
+function setTaskDays(item, days, message) {
   if (item.lockedDates) return toast('This row takes its dates from formulas in the sheet.');
-  const ups = [
-    { range: colRef('start', item.row), value: k },
-    { range: colRef('end', item.row), value: k },
-  ];
-  for (const d of plannedDays(item)) if (d !== k) { ups.push({ range: cellRef(item, d), value: '' }); delete item.cells[d]; }
-  if (state.plan.dayByKey[k]) { ups.push({ range: cellRef(item, k), value: 'X' }); item.cells[k] = 'X'; }
-  item.start = item.end = k;
+  days = [...new Set(days)].sort();
+  const before = currentDays(item);
+  const ups = [];
+  const marked = new Set(plannedDays(item));
+  for (const d of marked) if (!days.includes(d)) { ups.push({ range: cellRef(item, d), value: '' }); delete item.cells[d]; }
+  for (const d of days) if (!marked.has(d) && state.plan.dayByKey[d]) { ups.push({ range: cellRef(item, d), value: 'X' }); item.cells[d] = 'X'; }
+  const s0 = days[0] || '', s1 = days.at(-1) || '';
+  ups.push({ range: colRef('start', item.row), value: s0 }, { range: colRef('end', item.row), value: s1 });
+  item.start = s0 || null;
+  item.end = s1 || null;
   render();
   queue(ups, { delay: 200 });
-  toast(`Moved to ${relDay(k)}`);
+  if (message) toast(message, () => setTaskDays(item, before));
+}
+
+const moveTask = (item, k) => setTaskDays(item, k ? [k] : [], k ? `Moved to ${relDay(k)}` : 'Date removed');
+const addTaskDay = (item, k) => setTaskDays(item, [...currentDays(item), k], `Also planned for ${relDay(k)}`);
+const removeTaskDay = (item, k) => setTaskDays(item, currentDays(item).filter((d) => d !== k), `Removed from ${relDay(k)}`);
+
+async function deleteTask(item) {
+  const title = item.status.title;
+  await flush();
+  setSync('saving');
+  try {
+    await api.deleteRow(state.raw.sheetIds[CONFIG.sheets.gantt], item.row);
+    setSync('saved');
+    toast(`Deleted: ${title}`);
+  } catch (e) {
+    if (e instanceof api.AuthError) return renderSignIn('Your session ended before the task was deleted. Sign in and try again.');
+    setSync('error');
+    toast(`Not deleted. ${e.message}`);
+  }
+  await refresh();
 }
 
 async function addTask({ title, date, phase = '', subject = '', prio = '', note = '' }) {
@@ -870,13 +1010,13 @@ const sheetActions = (primary = 'Save', extra = '') => `
     <button class="btn btn-primary" value="save">${primary}</button>
   </div>`;
 
-function dateChoices(name, current) {
+function dateChoices(name, current, { none = false } = {}) {
   const tk = todayKey();
   const nextMon = addDays(tk, ((8 - dateOfKey(tk).getDay()) % 7) || 7);
-  const opts = [['Today', tk], ['Tomorrow', addDays(tk, 1)], ['Next Monday', nextMon]];
+  const opts = [['Today', tk], ['Tomorrow', addDays(tk, 1)], ['Next Monday', nextMon], ...(none ? [['No date', '']] : [])];
   return `
     <div class="choice-row">
-      ${opts.map(([l, k]) => `<button type="button" class="choice ${current === k ? 'is-on' : ''}" data-set="${name}" data-value="${k}">${l}</button>`).join('')}
+      ${opts.map(([l, k]) => `<button type="button" class="choice ${(current || '') === k ? 'is-on' : ''}" data-set="${name}" data-value="${k}">${l}</button>`).join('')}
       <input type="date" name="${name}" value="${current || ''}" aria-label="Date">
     </div>`;
 }
@@ -897,29 +1037,65 @@ function wireChoices(form) {
   });
 }
 
-function editHours(item, k) {
+function hourGrid(kind, cur, quick) {
+  return `<div class="hour-grid">${quick.map((h) => `<button class="hour ${h === cur ? 'is-on' : ''}" value="q" data-kind="${kind}" data-value="${h}">${h === 0 ? 'None' : fmtH(h)}</button>`).join('')}</div>`;
+}
+
+// One sheet for a subject on a day. From today backwards it opens on what was
+// actually studied, with the plan one tap away; future days show the plan only.
+function editHours(item, k, { pane } = {}) {
+  const canLog = k <= todayKey();
   const v = toNumber(item.cells[k]);
-  const quick = [0, 0.5, 1, 1.5, 2, 2.5, 3, 4];
+  const lv = loggedOn(item.subject, k);
+  const show = canLog ? pane || 'log' : 'plan';
+  const qPlan = [0, 0.5, 1, 1.5, 2, 2.5, 3, 4];
+  const qLog = [0, 0.5, 1, 1.5, 2, 2.5, 3, 4];
+  const other = (kind, cur, quick) => `<label class="field field-inline"><span>Other amount</span><input name="${kind}" type="number" inputmode="decimal" min="0" max="16" step="${kind === 'log' ? 0.25 : 0.5}" value="${quick.includes(cur) ? '' : cur}" placeholder="${kind === 'log' ? 'e.g. 1.75' : 'e.g. 5'}"></label>`;
+  const exam = state.plan.exams.some((e) => e.subject === item.subject && e.start === k);
   openSheet(`
-    ${sheetHead(item.subject, longLabel(k) + (state.plan.exams.some((e) => e.subject === item.subject && e.start === k) ? ', exam day' : ''))}
-    <p class="dlg-label">Study hours</p>
-    <div class="hour-grid">
-      ${quick.map((h) => `<button class="hour ${h === v ? 'is-on' : ''}" value="q" data-value="${h}" name="quick">${h === 0 ? 'None' : fmtH(h)}</button>`).join('')}
+    ${sheetHead(item.subject, longLabel(k) + (exam ? ', exam day' : ''))}
+    ${canLog ? `
+      <div class="segmented seg-sheet" role="tablist">
+        <button type="button" role="tab" data-pane-btn="log" aria-selected="${show === 'log'}">Studied <span>${fmtH(lv)} h</span></button>
+        <button type="button" role="tab" data-pane-btn="plan" aria-selected="${show === 'plan'}">Planned <span>${fmtH(v)} h</span></button>
+      </div>
+      <div class="pane" data-pane="log" ${show === 'log' ? '' : 'hidden'}>
+        <p class="dlg-label">How long did you actually study?</p>
+        ${v && v !== lv ? `<button class="btn btn-wide" value="q" data-kind="log" data-value="${v}">${ICON.check}As planned, ${fmtH(v)} h</button>` : ''}
+        ${hourGrid('log', lv, qLog)}
+        ${other('log', lv, qLog)}
+      </div>` : '<p class="dlg-label">Planned study hours</p>'}
+    <div class="pane" data-pane="plan" ${show === 'plan' ? '' : 'hidden'}>
+      ${canLog ? '<p class="dlg-label">Planned for this day</p>' : ''}
+      ${hourGrid('plan', v, qPlan)}
+      ${other('plan', v, qPlan)}
     </div>
-    <label class="field field-inline"><span>Other amount</span><input name="hours" type="number" inputmode="decimal" min="0" max="16" step="0.5" value="${quick.includes(v) ? '' : v}" placeholder="e.g. 5"></label>
     ${sheetActions('Save')}`,
   (d, which) => {
     if (which === 'q') return;
-    if (d.hours !== '') setHours(item, k, toNumber(d.hours));
+    if (d.log !== undefined && d.log !== '') setLogged(item.subject, k, toNumber(d.log));
+    if (d.plan !== undefined && d.plan !== '') setHours(item, k, toNumber(d.plan));
   }, {
     onOpen(form) {
-      form.querySelectorAll('.hour').forEach((b) => b.addEventListener('click', (ev) => {
+      form.querySelectorAll('[data-pane-btn]').forEach((b) => b.addEventListener('click', () => {
+        form.querySelectorAll('[data-pane-btn]').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
+        form.querySelectorAll('[data-pane]').forEach((p) => { p.hidden = p.dataset.pane !== b.dataset.paneBtn; });
+      }));
+      form.querySelectorAll('.pane [data-value]').forEach((b) => b.addEventListener('click', (ev) => {
         ev.preventDefault();
         $('#dialog').close();
-        setHours(item, k, Number(b.dataset.value));
+        const n = Number(b.dataset.value);
+        if (b.dataset.kind === 'log') setLogged(item.subject, k, n); else setHours(item, k, n);
       }));
     },
   });
+}
+
+// Logging from the day view or an exam card, for any subject.
+function logHours(subject, k) {
+  const item = state.plan.study.find((s) => s.subject === subject);
+  if (item) return editHours(item, k, { pane: 'log' });
+  setLogged(subject, k, 1);
 }
 
 function editText(range, label, sub, value) {
@@ -979,18 +1155,20 @@ function taskForm(t, date) {
   const phases = [...new Set(tasks.map((x) => x.phase).filter(Boolean))];
   const subjects = [...new Set(tasks.map((x) => x.subject).filter(Boolean))];
   const st = t?.status || { title: '', prio: '', note: '' };
+  const days = t ? currentDays(t) : [];
   return `
     <label class="field"><span>Task</span><input name="title" value="${esc(st.title)}" required autocomplete="off"></label>
     <p class="dlg-label">When</p>
-    ${dateChoices('date', date)}
+    ${days.length > 1 ? `<p class="dlg-sub">Planned on ${days.map((d) => esc(shortLabel(d))).join(', ')}. Picking a day moves it to that day only.</p>` : ''}
+    ${dateChoices('date', date, { none: Boolean(t) })}
     <p class="dlg-label">Priority</p>
     <div class="choice-row">
       ${['', 'P1', 'P2', 'P3'].map((p) => `<button type="button" class="choice ${st.prio === p ? 'is-on' : ''}" data-set="prio" data-value="${p}">${p || 'None'}</button>`).join('')}
       <input type="hidden" name="prio" value="${esc(st.prio)}">
     </div>
+    <label class="field"><span>Note</span><input name="note" value="${esc(st.note)}" autocomplete="off" placeholder="Optional"></label>
     <details class="more">
-      <summary>Note and area</summary>
-      <label class="field"><span>Note</span><input name="note" value="${esc(st.note)}" autocomplete="off" placeholder="Optional"></label>
+      <summary>Area and topic</summary>
       <div class="field-row">
         <label class="field"><span>Area</span><input name="phase" list="dl-phase" value="${esc(t ? t.phase : phases[0] || '')}" autocomplete="off"></label>
         <label class="field"><span>Topic</span><input name="subject" list="dl-subject" value="${esc(t?.subject || '')}" autocomplete="off"></label>
@@ -1003,40 +1181,87 @@ function taskForm(t, date) {
 function editTask(item) {
   const st = item.status;
   const done = st.status === 'done';
+  const due = taskDue(item) || '';
   openSheet(`
-    ${sheetHead('Edit task', done ? (st.doneOn ? `Done ${st.doneOn}` : 'Done') : taskDue(item) ? `Planned for ${relDay(taskDue(item))}` : 'No date')}
-    ${taskForm(item, taskDue(item))}
-    ${sheetActions('Save', `<button class="btn btn-quiet" value="toggle" formnovalidate>${done ? 'Mark as not done' : 'Mark as done'}</button>`)}`,
+    ${sheetHead('Edit task', [item.phase, item.subject].filter(Boolean).join(', '))}
+    <button type="button" class="done-toggle ${done ? 'is-done' : ''}" data-toggle-done aria-pressed="${done}">
+      <span class="check" aria-hidden="true">${ICON.check}</span>
+      <span><b>${done ? 'Done' : 'Not done yet'}</b><small>${done ? (st.doneOn ? `Finished ${esc(st.doneOn)}. Tap to reopen.` : 'Tap to reopen.') : 'Tap to mark as done.'}</small></span>
+    </button>
+    ${taskForm(item, due)}
+    ${sheetActions('Save', '<button class="btn btn-quiet btn-danger" value="delete" formnovalidate data-confirm>Delete</button>')}`,
   (d, which) => {
-    if (which === 'toggle') return toggleTask(item);
+    if (which === 'delete') return deleteTask(item);
     const ups = [];
     const changed = d.title.trim() !== st.title || d.prio !== st.prio || (d.note ?? st.note).trim() !== st.note;
     if (changed) {
-      const text = composeTask({ title: d.title.trim(), prio: d.prio, statusPart: st.statusPart, note: (d.note ?? st.note).trim() });
+      const text = composeTask({ title: d.title.trim(), prio: d.prio, statusPart: item.status.statusPart, note: (d.note ?? st.note).trim() });
       ups.push({ range: colRef('task', item.row), value: text });
       item.status = splitTask(text);
+      item.task = text;
     }
     if (d.phase !== undefined && d.phase.trim() !== item.phase) { ups.push({ range: colRef('phase', item.row), value: d.phase.trim() }); item.phase = d.phase.trim(); }
     if (d.subject !== undefined && d.subject.trim() !== item.subject) { ups.push({ range: colRef('subject', item.row), value: d.subject.trim() }); item.subject = d.subject.trim(); }
     if (ups.length) { render(); queue(ups, { delay: 0 }); }
-    if (d.date && d.date !== taskDue(item)) moveTask(item, d.date);
-  }, { onOpen: wireChoices });
+    if ((d.date || '') !== due) moveTask(item, d.date || '');
+  }, {
+    onOpen(form) {
+      wireChoices(form);
+      // Done toggles straight away; the rest waits for Save.
+      form.querySelector('[data-toggle-done]').addEventListener('click', () => { $('#dialog').close(); toggleTask(item); });
+      const del = form.querySelector('[data-confirm]');
+      del.addEventListener('click', (ev) => {
+        if (del.dataset.armed) return;
+        ev.preventDefault();
+        del.dataset.armed = '1';
+        del.textContent = 'Tap again to delete';
+      });
+    },
+  });
 }
 
 function moveTaskSheet(item) {
   openSheet(`
     ${sheetHead('Move task', item.status.title)}
-    ${dateChoices('date', taskDue(item))}
+    ${dateChoices('date', taskDue(item), { none: true })}
     ${sheetActions('Move')}`,
-  (d) => { if (d.date && d.date !== taskDue(item)) moveTask(item, d.date); },
+  (d) => { if ((d.date || '') !== (taskDue(item) || '')) moveTask(item, d.date || ''); },
   {
     onOpen(form) {
       wireChoices(form);
       form.querySelectorAll('[data-set]').forEach((b) => b.addEventListener('click', () => {
         $('#dialog').close();
-        if (b.dataset.value !== taskDue(item)) moveTask(item, b.dataset.value);
+        if (b.dataset.value !== (taskDue(item) || '')) moveTask(item, b.dataset.value);
       }));
     },
+  });
+}
+
+// Tapping a task's cell on the chart: clear choices for that day.
+function taskDaySheet(item, k) {
+  const days = currentDays(item);
+  const on = days.includes(k);
+  const done = item.status.status === 'done';
+  const elsewhere = days.filter((d) => d !== k);
+  const btn = (value, label, cls = '') => `<button class="act ${cls}" value="${value}">${label}</button>`;
+  openSheet(`
+    ${sheetHead(item.status.title, on ? `Planned for ${longLabel(k)}` : longLabel(k) + (days.length ? `. Now planned for ${days.map((d) => shortLabel(d)).join(', ')}` : '. No date yet'))}
+    <div class="act-list">
+      ${on ? `
+        ${btn('done', done ? `${ICON.check}Mark as not done` : `${ICON.check}Mark as done`, done ? '' : 'is-primary')}
+        ${btn('remove', `${ICON.close}Remove from ${esc(relDay(k))}`)}
+      ` : `
+        ${btn('move', `${ICON.right}${days.length ? 'Move' : 'Plan'} it to ${esc(relDay(k))}`, 'is-primary')}
+        ${elsewhere.length ? btn('add', `${ICON.plus}Also plan it for ${esc(relDay(k))}`) : ''}
+      `}
+      ${btn('edit', `${ICON.pen}Edit task`)}
+    </div>`,
+  (d, which) => {
+    if (which === 'done') return toggleTask(item);
+    if (which === 'remove') return removeTaskDay(item, k);
+    if (which === 'move') return moveTask(item, k);
+    if (which === 'add') return addTaskDay(item, k);
+    if (which === 'edit') return editTask(item);
   });
 }
 
@@ -1100,7 +1325,8 @@ document.addEventListener('click', (ev) => {
     case 'toggle-task': return item && toggleTask(item);
     case 'edit-task': return item && editTask(item);
     case 'move-task': return item && moveTaskSheet(item);
-    case 'plan-task': return item && planTask(item, el.dataset.day);
+    case 'task-day': return item && taskDaySheet(item, el.dataset.day);
+    case 'log-hours': return logHours(el.dataset.subject, el.dataset.day);
     case 'edit-cell': return item && editCell(item, el.dataset.day);
     case 'edit-text': return editText(el.dataset.range, el.dataset.label, el.dataset.sub, el.dataset.value);
     case 'add-task': return addTaskSheet(el.dataset.day);
