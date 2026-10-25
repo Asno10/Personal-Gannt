@@ -168,7 +168,7 @@ code { font-size: 0.9em; background: var(--wash); padding: 0.1em 0.35em; border-
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--rule) 60%, transparent);
 }
 .chip-btn.is-hidden { visibility: hidden; }
-.day-body.is-turning { animation: fade-in 0.22s ease-out; }
+
 .day-nav-top { display: flex; align-items: center; gap: 4px; padding: 0 8px 0 16px; min-height: 44px; }
 .month { font-weight: 600; color: var(--ink-2); font-size: 0.95rem; }
 .pick-date { position: relative; cursor: pointer; }
@@ -475,8 +475,6 @@ dialog {
   border-radius: 26px 26px 0 0; box-shadow: inset 0 1px 0 var(--glass-shine), inset 0 0 0 1px var(--glass-edge), 0 -10px 40px rgb(0 0 0 / 0.22);
   overflow: auto;
 }
-dialog[open] { animation: sheet-up 0.22s ease-out; }
-@keyframes sheet-up { from { transform: translateY(40px); opacity: 0.6; } }
 dialog::backdrop { background: rgb(8 12 16 / 0.32); }
 @media (min-width: 760px) {
   dialog { width: min(30rem, calc(100vw - 32px)); margin: auto; border-radius: 16px; box-shadow: 0 20px 60px rgb(0 0 0 / 0.3); }
@@ -536,7 +534,7 @@ dialog::backdrop { background: rgb(8 12 16 / 0.32); }
   transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
   display: flex; gap: 16px; align-items: center;
   background: color-mix(in srgb, var(--strip) 82%, transparent); color: var(--strip-ink); padding: 10px 10px 10px 18px; border-radius: 999px;
-  font-size: 0.92rem; max-width: calc(100vw - 32px); transition: transform 0.2s, opacity 0.2s;
+  font-size: 0.92rem; max-width: calc(100vw - 32px);
   box-shadow: 0 6px 24px rgb(0 0 0 / 0.2);
 }
 #toast span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -545,8 +543,261 @@ dialog::backdrop { background: rgb(8 12 16 / 0.32); }
 #toast.is-on { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; }
 @media (min-width: 760px) { #toast { bottom: 24px; } }
 
+
+/* ===================================================================
+   Apple design layer: iOS system colours, SF type, grouped cards,
+   glass controls and spring motion. Overrides the base styles above.
+   =================================================================== */
+:root {
+  --paper: #f2f2f7; --panel: #ffffff; --ink: #000000; --ink-2: #6c6c70; --ink-3: #8e8e93;
+  --rule: #c6c6c8; --wash: #e5e5ea; --fill: rgb(118 118 128 / 0.12); --fill-2: rgb(118 118 128 / 0.2);
+  --signal: #ff9500; --signal-ink: #ffffff; --alert: #ff3b30; --accent: #007aff;
+  --strip: #1c1c1e; --strip-ink: #ffffff;
+  --s0: #007aff; --s1: #30b0c7; --s2: #5856d6; --s3: #ff2d55;
+  --s4: #34c759; --s5: #af52de; --s6: #a2845e; --s7: #8e8e93;
+  --radius: 20px; --hair: 0.5px;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+  --font-c: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  /* Motion: iOS sheet curve, a soft spring, and a quick ease-in for exits */
+  --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
+  --spring: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --ease-in: cubic-bezier(0.32, 0, 0.67, 0);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #000000; --panel: #1c1c1e; --ink: #ffffff; --ink-2: #98989f; --ink-3: #636366;
+    --rule: #38383a; --wash: #2c2c2e; --fill: rgb(118 118 128 / 0.24); --fill-2: rgb(118 118 128 / 0.32);
+    --signal: #ff9f0a; --alert: #ff453a; --accent: #0a84ff; --strip: #2c2c2e;
+    --s0: #0a84ff; --s1: #40c8e0; --s2: #5e5ce6; --s3: #ff375f;
+    --s4: #30d158; --s5: #bf5af2; --s6: #ac8e68; --s7: #98989d;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #000000; --panel: #1c1c1e; --ink: #ffffff; --ink-2: #98989f; --ink-3: #636366;
+  --rule: #38383a; --wash: #2c2c2e; --fill: rgb(118 118 128 / 0.24); --fill-2: rgb(118 118 128 / 0.32);
+  --signal: #ff9f0a; --alert: #ff453a; --accent: #0a84ff; --strip: #2c2c2e;
+  --s0: #0a84ff; --s1: #40c8e0; --s2: #5e5ce6; --s3: #ff375f;
+  --s4: #30d158; --s5: #bf5af2; --s6: #ac8e68; --s7: #98989d;
+}
+body { font: 400 17px/1.3 var(--font); letter-spacing: -0.01em; }
+a, .link, .add-btn, .more summary, .tl-more th button { color: var(--accent); }
+
+/* Navigation bar: clear at the top, glass once content is under it */
+.bar {
+  display: grid; grid-template-columns: 1fr auto 1fr; grid-template-areas: "left title side";
+  padding: max(6px, env(safe-area-inset-top)) 10px 8px 16px; min-height: 52px;
+  background: transparent; box-shadow: none;
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+  transition: background-color 0.25s ease, box-shadow 0.25s ease;
+}
+.bar.is-scrolled {
+  background: color-mix(in srgb, var(--paper) 70%, transparent);
+  box-shadow: inset 0 calc(-1 * var(--hair)) 0 var(--rule);
+  -webkit-backdrop-filter: blur(22px) saturate(180%); backdrop-filter: blur(22px) saturate(180%);
+}
+.bar-left { grid-area: left; display: flex; align-items: center; min-width: 0; }
+.bar-title { grid-area: title; font: 600 17px/1 var(--font); letter-spacing: -0.02em; text-align: center; }
+.bar-side { grid-area: side; justify-self: end; gap: 8px; }
+.status { font-size: 13px; }
+.bar .icon-btn {
+  width: 36px; height: 36px; color: var(--ink);
+  background: var(--glass);
+  box-shadow: inset 0 0 0 var(--hair) var(--glass-edge), inset 0 1px 0 var(--glass-shine), 0 2px 8px rgb(0 0 0 / 0.06);
+  -webkit-backdrop-filter: blur(16px) saturate(180%); backdrop-filter: blur(16px) saturate(180%);
+}
+.bar .icon-btn svg { width: 19px; height: 19px; }
+@media (min-width: 760px) {
+  .bar { grid-template-columns: auto 1fr auto auto; grid-template-areas: "title . left side"; }
+  .bar-title { text-align: left; font-size: 20px; }
+  .bar-left { margin-right: 6px; }
+  .tabs { left: 50%; transform: translateX(-50%); }
+}
+
+/* Large titles */
+.page-title { font: 700 34px/1.2 var(--font); letter-spacing: 0.01em; margin: 6px 0 14px; }
+.tl-title { padding: 0 16px; }
+.day-title { font: 700 28px/1.2 var(--font); letter-spacing: 0.01em; margin: 8px 0 16px; }
+
+/* Grouped cards */
+.block { background: var(--panel); border-radius: var(--radius); padding: 2px 16px 6px; margin-bottom: 20px; }
+.block-head { padding: 14px 0 10px; border-bottom: var(--hair) solid var(--rule); }
+.block-head h2 { font: 600 17px/1.2 var(--font); }
+.block-meta { font-size: 15px; }
+.study, .task, .line, .event { border-bottom: var(--hair) solid var(--rule); }
+.study-list > li:last-child, .task-list > li:last-child, .block > .line:last-child, .block > .event:last-child { border-bottom: 0; }
+.add-row { padding-bottom: 8px; }
+.add-btn { font-weight: 500; }
+.note { font-size: 15px; padding-bottom: 8px; }
+.sub { font-size: 13px; text-transform: uppercase; letter-spacing: 0.02em; color: var(--ink-3); font-weight: 500; }
+.group { font: 600 20px/1.2 var(--font); border-bottom: 0; padding: 2px 4px 8px; }
+#view-tasks .block { padding-top: 10px; }
+.hint { font-size: 13px; padding: 0 4px; }
+
+/* Countdown as a widget card */
+.countdown {
+  background: var(--panel); color: var(--ink);
+  border-left: 0; border-radius: var(--radius); padding: 16px 18px;
+}
+.cd-num { font-family: var(--font-c); color: var(--signal); }
+.cd-num small { font-family: var(--font-c); color: var(--signal); }
+.cd-label { color: var(--ink-2); opacity: 1; font-size: 15px; }
+.cd-exam { font-size: 17px; }
+.cd-later { border-top: var(--hair) solid var(--rule); font-size: 15px; }
+.cd-later span { color: var(--ink-2); opacity: 1; }
+
+/* Controls */
+.btn { border-radius: 999px; font-weight: 600; font-size: 17px; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-quiet { color: var(--accent); }
+.btn-danger { color: var(--alert); }
+.chip-btn { border: 0; background: var(--fill); color: var(--accent); font-size: 15px; }
+.step { border: 0; background: var(--fill); color: var(--accent); width: 36px; height: 36px; }
+.study-hours { font-family: var(--font-c); font-weight: 600; }
+.log-btn { border: 0; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-size: 13px; min-height: 28px; }
+.log-btn.is-logged { background: var(--fill); color: var(--ink); }
+.log-btn.is-good { background: color-mix(in srgb, var(--s4) 16%, transparent); color: var(--s4); }
+.chip { border: 0; background: color-mix(in srgb, var(--c) 14%, transparent); font-size: 15px; font-weight: 500; }
+.check { width: 24px; height: 24px; border-width: 1.5px; border-color: var(--ink-3); }
+.task.is-done .check, .done-toggle.is-done .check { background: var(--s4); border-color: var(--s4); }
+.due { background: var(--fill); font-size: 13px; }
+.segmented { background: var(--fill); }
+.segmented button[aria-selected="true"] { box-shadow: 0 3px 8px rgb(0 0 0 / 0.12), 0 0 0 var(--hair) rgb(0 0 0 / 0.04); }
+.quick-add { border: 0; border-radius: 16px; }
+.pick span { border: 0; background: var(--fill); }
+.pick input:checked + span { background: var(--accent); color: #fff; }
+
+/* Day strip: today in orange, the selected day in a filled capsule */
+.strip-day { border-radius: 22px; border: 0; }
+.strip-day.is-today { border-color: transparent; }
+.strip-day.is-today .sd-num { color: var(--signal); }
+.strip-day.is-selected { background: var(--ink); color: var(--paper); }
+.strip-day.is-today.is-selected { background: var(--signal); }
+.strip-day.is-today.is-selected .sd-num { color: #fff; }
+.sd-num { font-family: var(--font-c); }
+
+/* Exams */
+.exam { border: 0; border-radius: var(--radius); padding: 16px 18px 14px; background: var(--panel); }
+.exam-count { font-family: var(--font-c); font-size: 44px; }
+.exam-count small { font-family: var(--font); font-size: 17px; font-weight: 500; }
+.exam-subject { color: var(--c); font-size: 20px; font-weight: 600; }
+.progress-bar { height: 6px; background: var(--fill); }
+
+/* Timeline */
+.tl-num { font-family: var(--font-c); }
+.tl-day.is-today .tl-num { color: #fff; }
+.tl-h, .tl-pv-h { font-family: var(--font-c); }
+.tl-exam-pill { color: #fff; }
+.tl-today-btn { border: 0; background: var(--fill); color: var(--accent); }
+.tl-today-btn svg { color: var(--accent); }
+
+/* Tab bar: selected tab in the accent colour */
+.tab { color: var(--ink); font-size: 10px; font-weight: 500; letter-spacing: 0; }
+.tab svg { color: var(--ink); }
+.tab[aria-current="page"], .tab.is-under, .tab[aria-current="page"] svg, .tab.is-under svg { color: var(--accent); }
+.tabs.is-dragging .tab[aria-current="page"]:not(.is-under), .tabs.is-dragging .tab[aria-current="page"]:not(.is-under) svg { color: var(--ink); }
+@media (min-width: 760px) { .tab { font-size: 15px; } .tab[aria-current="page"] { background: var(--fill); } }
+
+/* Sheets: floating glass card, inset from the edges */
+dialog {
+  width: calc(100% - 16px); margin: auto 8px calc(8px + env(safe-area-inset-bottom) * 0.4);
+  border-radius: 34px; max-height: calc(100dvh - 60px);
+  overscroll-behavior: contain;
+}
+.dlg { padding: 8px 20px 22px; gap: 16px; }
+.grab { width: 36px; height: 5px; background: color-mix(in srgb, var(--ink-3) 45%, transparent); }
+.dlg h2 { font: 600 20px/1.2 var(--font); }
+.dlg-sub { font-size: 15px; }
+.dlg-label { font-size: 13px; color: var(--ink-2); font-weight: 500; text-transform: none; }
+.dlg-head .icon-btn { width: 32px; height: 32px; background: var(--fill); color: var(--ink-2); margin: 4px -4px 0 0; }
+.dlg-head .icon-btn svg { width: 16px; height: 16px; stroke-width: 2.4; }
+.hour, .choice, .act, .btn-wide { border: 0; background: var(--fill); }
+.hour { border-radius: 14px; font-family: var(--font-c); }
+.hour.is-on, .choice.is-on, .act.is-primary { background: var(--accent); color: #fff; }
+.act { border-radius: 16px; font-weight: 500; }
+.act.is-primary svg { color: #fff; }
+.btn-wide { color: var(--s4); border-radius: 14px; }
+.field input, .field textarea, .choice-row input[type="date"] { border: 0; background: var(--fill); border-radius: 12px; }
+.field input:focus, .field textarea:focus { outline: 2px solid var(--accent); }
+.done-toggle { background: var(--fill); border-radius: 16px; }
+@media (min-width: 760px) { dialog { width: min(30rem, calc(100vw - 32px)); margin: auto; border-radius: 26px; } }
+
+/* ---------- Motion ---------- */
+
+/* Sheet: slides up on the iOS sheet curve; leaves with a quicker ease-in.
+   The dimmed backdrop fades with it. */
+dialog[open] { animation: sheet-in 0.5s var(--ease-out); }
+@keyframes sheet-in { from { transform: translateY(calc(100% + 40px)); } }
+dialog.is-closing { animation: sheet-out 0.3s var(--ease-in) forwards; }
+@keyframes sheet-out { from { transform: translateY(var(--drag-y, 0px)); } to { transform: translateY(calc(100% + 40px)); } }
+dialog[open]::backdrop { animation: backdrop-in 0.4s ease both; }
+dialog.is-closing::backdrop { animation: backdrop-out 0.3s ease forwards; }
+@keyframes backdrop-in { from { opacity: 0; } }
+@keyframes backdrop-out { to { opacity: 0; } }
+dialog.is-settling { transition: transform 0.5s var(--spring); }
+@media (min-width: 760px) {
+  dialog[open] { animation: card-in 0.35s var(--ease-out); }
+  @keyframes card-in { from { opacity: 0; transform: scale(0.94); } }
+  dialog.is-closing { animation: card-out 0.2s var(--ease-in) forwards; }
+  @keyframes card-out { to { opacity: 0; transform: scale(0.96); } }
+}
+
+/* Press feedback: controls dip slightly under the finger and spring back */
+:is(.act, .hour, .choice, .chip, .chip-btn, .step, .btn, .btn-wide, .log-btn, .strip-day, .icon-btn, .add-btn, .task-body, .study-name, .study-hours, .done-toggle, .fold, .tl-today-btn, .due, .check, .pick span, .segmented button, .exam .add-btn) {
+  transition: transform 0.45s var(--spring), background-color 0.2s ease, color 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease;
+}
+:is(.act, .hour, .choice, .chip, .chip-btn, .step, .btn, .btn-wide, .log-btn, .strip-day, .icon-btn, .add-btn, .done-toggle, .fold, .tl-today-btn, .due, .check, .pick span, .segmented button):active {
+  transform: scale(0.95); transition-duration: 0.1s;
+}
+:is(.task-body, .study-name, .study-hours):active { opacity: 0.55; transition-duration: 0.08s; }
+.tl-cell > :is(.tl-h, .tl-exam-pill, .tl-dot, .tl-done, .tl-ex, .tl-mark) { transition: transform 0.45s var(--spring); }
+.tl-cell:active > :is(.tl-h, .tl-exam-pill, .tl-dot, .tl-done, .tl-ex, .tl-mark) { transform: scale(0.9); transition-duration: 0.1s; }
+.tl-cell:active { background: transparent; }
+.tl-cell:hover { background: transparent; }
+
+/* Tab bar: the glass highlight springs between tabs, and lifts like a lens
+   while pressed or dragged */
+.tab-glow { transition: scale 0.35s var(--spring), background 0.25s ease, box-shadow 0.25s ease; }
+.tabs.is-springing .tab-glow { transition: transform 0.55s var(--spring), scale 0.35s var(--spring), background 0.25s ease, box-shadow 0.25s ease; }
+.tabs.is-dragging .tab-glow { transition: transform 0.08s linear, scale 0.35s var(--spring); }
+.tabs.is-pressing .tab-glow {
+  scale: 1.14 1.22;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.75), rgb(255 255 255 / 0.25));
+  box-shadow: inset 0 0 0 var(--hair) var(--glass-edge), inset 0 1px 1px var(--glass-shine), 0 6px 20px rgb(15 25 40 / 0.18);
+}
+.tab { transition: color 0.2s ease, transform 0.45s var(--spring); }
+.tabs.is-pressing .tab.is-under { transform: scale(1.06); }
+
+/* Toast: rises with a spring, fades out */
+#toast {
+  transform: translate(-50%, 24px) scale(0.94);
+  transition: transform 0.25s var(--ease-in), opacity 0.2s ease;
+  -webkit-backdrop-filter: blur(22px) saturate(180%); backdrop-filter: blur(22px) saturate(180%);
+}
+#toast.is-on { transform: translate(-50%, 0) scale(1); transition: transform 0.55s var(--spring), opacity 0.25s ease; }
+
+/* Changing day: the new day slides in from the side it came from */
+.day-body.turn-next { animation: turn-next 0.38s var(--ease-out); }
+.day-body.turn-prev { animation: turn-prev 0.38s var(--ease-out); }
+@keyframes turn-next { from { opacity: 0; transform: translateX(28px); } }
+@keyframes turn-prev { from { opacity: 0; transform: translateX(-28px); } }
+
+/* Selected day capsule eases between colours */
+.strip-day { transition: background-color 0.25s ease, color 0.25s ease, transform 0.45s var(--spring); }
+
+/* Ticking a task: the check pops */
+.task.is-popping .check { animation: check-pop 0.5s var(--spring); }
+@keyframes check-pop { 0% { transform: scale(0.6); } 55% { transform: scale(1.18); } 100% { transform: scale(1); } }
+
+/* Opening a timeline section: its rows ease in */
+.tl tr.is-entering > * { animation: row-in 0.32s var(--ease-out) both; }
+@keyframes row-in { from { opacity: 0; transform: translateY(-6px); } }
+
+/* Saved status fades in */
+.status { transition: color 0.25s ease; }
+.status.is-saved { animation: fade-up 0.35s var(--ease-out); }
+@keyframes fade-up { from { opacity: 0; transform: translateY(3px); } }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
-.view.is-turning { animation: fade-in 0.2s ease-out; }
-@keyframes fade-in { from { opacity: 0.35; } }
+

@@ -1,6 +1,6 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=4';
-import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=4';
+import * as api from './sheets.js?v=5';
+import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=5';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -207,10 +207,10 @@ const VIEWS = [
 function ensureShell() {
   if ($('#pager')) return false;
   app.innerHTML = `
-    <header class="bar">
+    <header class="bar" id="bar">
+      <div class="bar-left"><span class="status" id="status" aria-live="polite"></span></div>
       <div class="bar-title">Personal Gantt</div>
       <div class="bar-side">
-        <span class="status" id="status" aria-live="polite"></span>
         <button class="icon-btn" data-action="refresh" aria-label="Reload from the sheet" title="Reload from the sheet">${ICON.refresh}</button>
         <button class="icon-btn" data-action="menu" aria-label="Account" title="Account">${ICON.user}</button>
       </div>
@@ -223,6 +223,10 @@ function ensureShell() {
       ${VIEWS.map(([v]) => `<section class="page" id="page-${v}" data-view="${v}"><main class="view view-${v}" id="view-${v}"></main></section>`).join('')}
     </div>`;
   bindPager($('#pager'));
+  bindTabDrag($('#tabs'));
+  // The bar is clear over the top of a page and turns to glass once content
+  // scrolls under it, as iOS navigation bars do.
+  $$('.page').forEach((pg) => pg.addEventListener('scroll', () => { if (pg.dataset.view === state.view) updateBarGlass(); }, { passive: true }));
   return true;
 }
 
@@ -261,7 +265,13 @@ const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce
 const pageIndex = (v) => Math.max(0, VIEWS.findIndex(([x]) => x === v));
 let pagerTarget = null;
 
+function updateBarGlass() {
+  const pg = $(`#page-${state.view}`);
+  $('#bar')?.classList.toggle('is-scrolled', Boolean(pg && pg.scrollTop > 4));
+}
+
 function updateTabs() {
+  updateBarGlass();
   $$('.tab').forEach((t) => t.setAttribute('aria-current', t.dataset.view === state.view ? 'page' : 'false'));
 }
 
@@ -276,7 +286,16 @@ function goToPage(v, smooth) {
   const p = $('#pager');
   if (!p) return;
   setView(v);
-  if (!smooth || reducedMotion()) $('#tabs')?.style.setProperty('--ti', pageIndex(v));
+  const tabs = $('#tabs');
+  if (tabs) {
+    // The highlight springs to the tab on its own, ahead of the sliding page.
+    if (smooth && !reducedMotion()) {
+      tabs.classList.add('is-springing');
+      clearTimeout(tabs._spring);
+      tabs._spring = setTimeout(() => tabs.classList.remove('is-springing'), 560);
+    }
+    tabs.style.setProperty('--ti', pageIndex(v));
+  }
   pagerTarget = smooth && !reducedMotion() ? pageIndex(v) : null;
   p.scrollTo({ left: pageIndex(v) * p.clientWidth, behavior: pagerTarget == null ? 'auto' : 'smooth' });
 }
@@ -293,8 +312,56 @@ function bindPager(p) {
     const v = VIEWS[Math.round(p.scrollLeft / w)]?.[0];
     if (v) setView(v);
   }, { passive: true });
-  // The glass highlight in the tab bar follows the pages as they slide.
-  p.addEventListener('scroll', () => $('#tabs')?.style.setProperty('--ti', (p.scrollLeft / (p.clientWidth || 1)).toFixed(3)), { passive: true });
+  // The glass highlight in the tab bar follows the pages as they are swiped.
+  p.addEventListener('scroll', () => {
+    if (pagerTarget != null) return;
+    $('#tabs')?.style.setProperty('--ti', (p.scrollLeft / (p.clientWidth || 1)).toFixed(3));
+  }, { passive: true });
+}
+
+// Touching the tab bar lifts the glass highlight under the finger; dragging
+// slides it across the tabs, and letting go opens the tab it rests on.
+let tabTouchAt = 0;
+function bindTabDrag(nav) {
+  let active = false, x0 = 0, moved = false;
+  const wide = () => window.matchMedia('(min-width: 760px)').matches;
+  const tiAt = (x) => {
+    const r = nav.getBoundingClientRect();
+    const slot = (r.width - 10) / VIEWS.length;
+    return Math.min(VIEWS.length - 1, Math.max(0, (x - r.left - 5) / slot - 0.5));
+  };
+  const mark = (i) => $$('.tab', nav).forEach((t, j) => t.classList.toggle('is-under', j === i));
+  nav.addEventListener('touchstart', (ev) => {
+    if (wide() || ev.touches.length !== 1) return;
+    active = true; moved = false; x0 = ev.touches[0].clientX;
+    tabTouchAt = Date.now();
+    pagerTarget = 'drag';
+    const ti = Math.round(tiAt(x0));
+    nav.classList.add('is-pressing', 'is-springing');
+    nav.style.setProperty('--ti', ti);
+    mark(ti);
+  }, { passive: true });
+  nav.addEventListener('touchmove', (ev) => {
+    if (!active) return;
+    const x = ev.touches[0].clientX;
+    if (!moved && Math.abs(x - x0) < 6) return;
+    if (!moved) { moved = true; nav.classList.remove('is-springing'); nav.classList.add('is-dragging'); }
+    const ti = tiAt(x);
+    nav.style.setProperty('--ti', ti.toFixed(3));
+    mark(Math.round(ti));
+  }, { passive: true });
+  const end = (cancel) => {
+    if (!active) return;
+    active = false;
+    tabTouchAt = Date.now();
+    nav.classList.remove('is-pressing', 'is-dragging');
+    mark(-1);
+    const i = cancel ? pageIndex(state.view) : Math.round(parseFloat(nav.style.getPropertyValue('--ti')) || 0);
+    pagerTarget = null;
+    goToPage(VIEWS[i][0], true);
+  };
+  nav.addEventListener('touchend', () => end(false), { passive: true });
+  nav.addEventListener('touchcancel', () => end(true), { passive: true });
 }
 
 window.addEventListener('resize', () => {
@@ -410,14 +477,15 @@ function selectDay(k, { fromStrip = false, smooth = true } = {}) {
   k = clampDay(k);
   if (!state.plan.dayByKey[k]) return;
   const changed = k !== state.day;
+  const dir = k > state.day ? 'next' : 'prev';
   state.day = k;
   updateDayHead();
   if (changed) {
     const body = $('#day-body');
     body.innerHTML = renderToday();
-    body.classList.remove('is-turning');
+    body.classList.remove('turn-next', 'turn-prev');
     void body.offsetWidth;
-    body.classList.add('is-turning');
+    body.classList.add('turn-' + dir);
   }
   if (!fromStrip) centerStrip(!smooth);
 }
@@ -599,7 +667,7 @@ function taskRow(t, { hideDate = false } = {}) {
   const lateBy = overdue ? daysBetween(due, todayKey()) : 0;
   const where = [t.phase, t.subject].filter(Boolean).join(', ');
   return `
-    <li class="task ${done ? 'is-done' : ''}">
+    <li class="task ${done ? 'is-done' : ''} ${state.justToggled === t.row ? 'is-popping' : ''}">
       <button class="check" data-action="toggle-task" data-row="${t.row}" role="checkbox" aria-checked="${done}" aria-label="${done ? 'Mark as not done' : 'Mark as done'}: ${esc(st.title)}">${ICON.check}</button>
       <button class="task-body" data-action="edit-task" data-row="${t.row}">
         <span class="task-title">${st.prio ? `<span class="prio prio-${esc(st.prio.slice(1))}">${esc(st.prio)}</span>` : ''}${esc(st.title)}</span>
@@ -672,7 +740,7 @@ function renderTimeline() {
         </th>
         ${days.map((d) => `<td class="${colCls(d.key)}">${shut && preview ? preview(d.key) : ''}</td>`).join('')}
       </tr>
-      ${shut ? '' : rows.join('')}`;
+      ${shut ? '' : (state.justOpened === id ? rows.map((r) => r.replace('<tr class="', '<tr class="is-entering ')) : rows).join('')}`;
   };
   const blankCells = () => days.map((d) => `<td class="${colCls(d.key)}"></td>`).join('');
 
@@ -810,6 +878,7 @@ function renderTimeline() {
   ].join('');
 
   return `
+    <h1 class="page-title tl-title">Timeline</h1>
     <div class="tl-legend" aria-label="Legend">
       <span><i class="lg-h"></i>Planned hours</span>
       <span><i class="tl-log is-good lg-log">2</i>Studied</span>
@@ -1054,7 +1123,9 @@ function setTaskStatus(item, next, { announce = true } = {}) {
   const text = composeTask({ ...st, statusPart });
   item.status = splitTask(text);
   item.task = text;
+  state.justToggled = next === 'done' ? item.row : null;
   render();
+  state.justToggled = null;
   queue([{ range: colRef('task', item.row), value: text }], { delay: 300 });
   if (announce) {
     toast(next === 'done' ? `Done: ${st.title}` : `Back to do: ${st.title}`, () => {
@@ -1137,20 +1208,96 @@ async function addTask({ title, date, phase = '', subject = '', prio = '', note 
 
 // ---------- Sheets (dialogs) ----------
 
+// Sheets slide up from the bottom on an iOS sheet curve and slide back down
+// when dismissed. They can be pulled down to dismiss; a short pull springs
+// back. Whatever the sheet changes is applied as it leaves, so the update is
+// seen on the page underneath.
+let sheetClosing = false;
+const sheetAfter = [];
+
+function closeSheet(after) {
+  const dlg = $('#dialog');
+  if (after) sheetAfter.push(after);
+  if (!dlg.open) { sheetAfter.splice(0).forEach((f) => f()); return; }
+  if (sheetClosing) return;
+  sheetClosing = true;
+  let timer = 0;
+  const finish = () => {
+    clearTimeout(timer);
+    dlg.removeEventListener('animationend', onEnd);
+    dlg.classList.remove('is-closing', 'is-dragging', 'is-settling');
+    dlg.style.transform = '';
+    dlg.style.removeProperty('--drag-y');
+    dlg.close();
+    sheetClosing = false;
+    sheetAfter.splice(0).forEach((f) => f());
+  };
+  const onEnd = (ev) => { if (ev.target === dlg) finish(); };
+  if (reducedMotion()) return finish();
+  dlg.addEventListener('animationend', onEnd);
+  timer = setTimeout(finish, 480);
+  dlg.classList.add('is-closing');
+}
+
 function openSheet(html, onSubmit, { onOpen } = {}) {
   const dlg = $('#dialog');
-  dlg.innerHTML = `<form method="dialog" class="dlg"><div class="grab" aria-hidden="true"></div>${html}</form>`;
+  // The hidden first button makes Enter in a field mean Save, not Close.
+  dlg.innerHTML = `<form method="dialog" class="dlg"><button class="sr-only" value="save" tabindex="-1" aria-hidden="true"></button><div class="grab" aria-hidden="true"></div>${html}</form>`;
   const form = dlg.querySelector('form');
   form.addEventListener('submit', (ev) => {
-    const btn = ev.submitter;
-    if (btn?.value === 'cancel') return;
     ev.preventDefault();
+    const btn = ev.submitter;
+    if (btn?.value === 'cancel') return closeSheet();
     const data = Object.fromEntries(new FormData(form));
-    dlg.close();
-    onSubmit(data, btn?.value || btn?.dataset.value);
+    const which = btn?.value || btn?.dataset.value;
+    closeSheet(() => onSubmit(data, which));
   });
+  dlg.classList.remove('is-closing', 'is-dragging', 'is-settling');
+  dlg.style.transform = '';
   dlg.showModal();
+  dlg.scrollTop = 0;
   if (onOpen) onOpen(form);
+}
+
+function bindSheetDrag(dlg) {
+  let y0 = 0, x0 = 0, t0 = 0, dy = 0, v = 0, lastY = 0, lastT = 0, allowed = false, dragging = false;
+  dlg.addEventListener('touchstart', (ev) => {
+    if (ev.touches.length !== 1 || sheetClosing) { allowed = false; return; }
+    const t = ev.touches[0];
+    y0 = lastY = t.clientY; x0 = t.clientX; t0 = lastT = performance.now(); dy = 0; v = 0; dragging = false;
+    allowed = dlg.scrollTop <= 0 && !ev.target.closest('input, textarea, select');
+  }, { passive: true });
+  dlg.addEventListener('touchmove', (ev) => {
+    if (!allowed) return;
+    const t = ev.touches[0], now = performance.now();
+    const d = t.clientY - y0;
+    if (!dragging) {
+      if (Math.abs(t.clientX - x0) > Math.abs(d) || d < 6) { if (d < -4) allowed = false; return; }
+      dragging = true;
+      dlg.classList.add('is-dragging');
+    }
+    ev.preventDefault();
+    if (now > lastT) v = 0.75 * ((t.clientY - lastY) / (now - lastT)) + 0.25 * v;
+    lastY = t.clientY; lastT = now;
+    dy = Math.max(0, d);
+    dlg.style.transform = `translateY(${dy}px)`;
+  }, { passive: false });
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    dlg.classList.remove('is-dragging');
+    if (dy > Math.min(140, dlg.offsetHeight * 0.3) || v > 0.55) {
+      dlg.style.setProperty('--drag-y', dy + 'px');
+      dlg.style.transform = '';
+      closeSheet();
+    } else {
+      dlg.classList.add('is-settling');
+      dlg.style.transform = '';
+      setTimeout(() => dlg.classList.remove('is-settling'), 520);
+    }
+  };
+  dlg.addEventListener('touchend', end, { passive: true });
+  dlg.addEventListener('touchcancel', end, { passive: true });
 }
 
 const sheetHead = (title, sub) => `
@@ -1237,9 +1384,8 @@ function editHours(item, k, { pane } = {}) {
       }));
       form.querySelectorAll('.pane [data-value]').forEach((b) => b.addEventListener('click', (ev) => {
         ev.preventDefault();
-        $('#dialog').close();
         const n = Number(b.dataset.value);
-        if (b.dataset.kind === 'log') setLogged(item.subject, k, n); else setHours(item, k, n);
+        closeSheet(() => { if (b.dataset.kind === 'log') setLogged(item.subject, k, n); else setHours(item, k, n); });
       }));
     },
   });
@@ -1362,7 +1508,7 @@ function editTask(item) {
     onOpen(form) {
       wireChoices(form);
       // Done toggles straight away; the rest waits for Save.
-      form.querySelector('[data-toggle-done]').addEventListener('click', () => { $('#dialog').close(); toggleTask(item); });
+      form.querySelector('[data-toggle-done]').addEventListener('click', () => closeSheet(() => toggleTask(item)));
       const del = form.querySelector('[data-confirm]');
       del.addEventListener('click', (ev) => {
         if (del.dataset.armed) return;
@@ -1384,8 +1530,7 @@ function moveTaskSheet(item) {
     onOpen(form) {
       wireChoices(form);
       form.querySelectorAll('[data-set]').forEach((b) => b.addEventListener('click', () => {
-        $('#dialog').close();
-        if (b.dataset.value !== (taskDue(item) || '')) moveTask(item, b.dataset.value);
+        closeSheet(() => { if (b.dataset.value !== (taskDue(item) || '')) moveTask(item, b.dataset.value); });
       }));
     },
   });
@@ -1462,7 +1607,9 @@ document.addEventListener('click', (ev) => {
     case 'sign-in': return signIn(store.get('pg.signedIn') === '1');
     case 'refresh': return flush().then(() => refresh());
     case 'menu': return accountMenu();
-    case 'view': return goToPage(el.dataset.view, true);
+    case 'view':
+      if (Date.now() - tabTouchAt < 700) return; // handled by the touch on the tab bar
+      return goToPage(el.dataset.view, true);
     case 'pick-day': return goDay(el.dataset.day);
     case 'open-day': selectDay(el.dataset.day, { smooth: false }); return goToPage('today', true);
     case 'go-today': return goDay(clampDay(todayKey()));
@@ -1482,9 +1629,13 @@ document.addEventListener('click', (ev) => {
     case 'toggle-done-tl': state.tlShowDone = !state.tlShowDone; return render();
     case 'toggle-section': {
       const id = el.dataset.key;
-      if (state.collapsed.has(id)) state.collapsed.delete(id); else state.collapsed.add(id);
+      const opening = state.collapsed.has(id);
+      if (opening) state.collapsed.delete(id); else state.collapsed.add(id);
       store.set('pg.tlCollapsed', JSON.stringify([...state.collapsed]));
-      return render();
+      state.justOpened = opening ? id : null;
+      render();
+      state.justOpened = null;
+      return;
     }
     case 'undo': {
       const t = $('#toast');
@@ -1516,7 +1667,11 @@ document.addEventListener('submit', (ev) => {
 
 // Dismiss a sheet by tapping outside it; catch up on any render held while it was open.
 const dialog = $('#dialog');
-dialog.addEventListener('click', (ev) => { if (ev.target === dialog) dialog.close(); });
+dialog.addEventListener('click', (ev) => { if (ev.target === dialog) closeSheet(); });
+dialog.addEventListener('cancel', (ev) => { ev.preventDefault(); closeSheet(); });
+bindSheetDrag(dialog);
+// Lets :active press states show on iOS.
+document.addEventListener('touchstart', () => {}, { passive: true });
 dialog.addEventListener('close', () => { if (state.dirty) { state.dirty = false; render(); } });
 
 document.addEventListener('keydown', (ev) => {
