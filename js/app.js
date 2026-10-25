@@ -208,7 +208,7 @@ function render({ resetScroll = false } = {}) {
   // Keep every scroll position across re-renders, so an edit never moves the page.
   const keep = resetScroll ? null : {
     y: window.scrollY,
-    tl: $('#tl-scroll') && [$('#tl-scroll').scrollLeft, $('#tl-scroll').scrollTop],
+    tl: $('#tl-scroll')?.scrollLeft,
   };
 
   app.innerHTML = `
@@ -228,8 +228,12 @@ function render({ resetScroll = false } = {}) {
 
   window.scrollTo(0, keep ? keep.y : 0);
   const sc = $('#tl-scroll');
-  if (sc && keep?.tl) [sc.scrollLeft, sc.scrollTop] = keep.tl;
-  else if (sc) scrollTimelineToToday(false);
+  if (sc) {
+    bindTimelineScroll(sc);
+    if (keep?.tl != null) sc.scrollLeft = keep.tl;
+    else scrollTimelineToToday(false);
+    syncTimelineHead();
+  }
   const bar = $('.bar');
   if (bar) document.documentElement.style.setProperty('--bar-h', bar.offsetHeight + 'px');
   if (view === 'today') centerStrip(!keep);
@@ -578,6 +582,9 @@ function renderTimeline() {
     }).join(''),
   }));
 
+  // Both tables share these column widths, so the dates line up with the cells below.
+  const cols = `<colgroup><col class="tl-col-name">${days.map(() => '<col class="tl-col-day">').join('')}</colgroup>`;
+
   const studyTotal = state.plan.study.reduce((n, s) => n + Object.values(s.cells).reduce((m, v) => m + toNumber(v), 0), 0);
   const body = [
     section('study', 'Study', `${fmtH(studyTotal)} h`, [...study, ...lonelyExams]),
@@ -594,20 +601,52 @@ function renderTimeline() {
       <span><i class="tl-dot"></i>Task planned</span>
       <span><i class="lg-bar"></i>Event</span>
     </div>
+    <div class="tl-head-wrap" id="tl-head" aria-hidden="false">
+      <table class="tl" style="--n:${days.length}">${cols}<thead>${head}</thead></table>
+    </div>
     <div class="tl-scroll" id="tl-scroll">
-      <table class="tl">
-        <thead>${head}</thead>
-        <tbody>${body}</tbody>
-      </table>
+      <table class="tl" style="--n:${days.length}">${cols}<tbody>${body}</tbody></table>
     </div>
     <p class="tl-tip">Tap a cell to change it, or a date to open that day. The small number under each date is that day's study total.</p>`;
 }
 
+// The timeline is two parts: the date row, pinned under the top bar, and the
+// grid, which scrolls sideways only. Up and down moves the whole page, so a
+// swipe moves along one axis at a time and the dates never drift from the grid.
+function syncTimelineHead() {
+  const sc = $('#tl-scroll');
+  const hd = $('#tl-head');
+  if (sc && hd && hd.scrollLeft !== sc.scrollLeft) hd.scrollLeft = sc.scrollLeft;
+}
+
+function bindTimelineScroll(sc) {
+  sc.addEventListener('scroll', syncTimelineHead, { passive: true });
+  // A sideways swipe on the date row moves the grid too.
+  const hd = $('#tl-head');
+  if (!hd) return;
+  let x0 = null, y0 = 0, left0 = 0, axis = '';
+  hd.addEventListener('touchstart', (ev) => {
+    if (ev.touches.length !== 1) { x0 = null; return; }
+    x0 = ev.touches[0].clientX; y0 = ev.touches[0].clientY; left0 = sc.scrollLeft; axis = '';
+  }, { passive: true });
+  hd.addEventListener('touchmove', (ev) => {
+    if (x0 == null) return;
+    const dx = ev.touches[0].clientX - x0, dy = ev.touches[0].clientY - y0;
+    if (!axis && Math.hypot(dx, dy) > 8) axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+    if (axis === 'x') sc.scrollLeft = left0 - dx;
+  }, { passive: true });
+  hd.addEventListener('touchend', () => { x0 = null; }, { passive: true });
+  hd.addEventListener('wheel', (ev) => {
+    const d = Math.abs(ev.deltaX) > Math.abs(ev.deltaY) ? ev.deltaX : ev.shiftKey ? ev.deltaY : 0;
+    if (d) { sc.scrollLeft += d; ev.preventDefault(); }
+  }, { passive: false });
+}
+
 function scrollTimelineToToday(smooth) {
   const sc = $('#tl-scroll');
-  const th = sc && sc.querySelector('.tl-day.is-today');
+  const th = $('#tl-head .tl-day.is-today');
   if (!sc || !th) return;
-  const nameW = sc.querySelector('.tl-name')?.offsetWidth || 0;
+  const nameW = $('#tl-head .tl-name')?.offsetWidth || 0;
   sc.scrollTo({ left: Math.max(0, th.offsetLeft - nameW - th.offsetWidth), behavior: smooth ? 'smooth' : 'auto' });
 }
 
