@@ -1,6 +1,6 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=5';
-import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=5';
+import * as api from './sheets.js?v=6';
+import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=6';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -966,10 +966,13 @@ function renderExams() {
   const past = exams.filter((e) => e.start < tk);
   return `
     <h1 class="page-title">Exams</h1>
+    ${upcoming.some((e) => state.plan.study.some((s) => s.subject === e.subject)) ? `<p class="exam-key"><i class="k-plan"></i>Planned <i class="k-done"></i>Studied</p>` : ''}
     <div class="exam-grid">${upcoming.map((e) => examCard(e, tk)).join('') || '<p class="empty">No upcoming exams in the sheet.</p>'}</div>
     ${past.length ? `<h2 class="sub">Finished</h2><div class="exam-grid is-past">${past.map((e) => examCard(e, tk)).join('')}</div>` : ''}`;
 }
 
+// One card per exam: name and when on the left, the countdown on the right,
+// then hours studied against the plan, a slim day-by-day chart, and logging.
 function examCard(e, tk) {
   const study = state.plan.study.find((s) => s.subject === e.subject);
   const active = study ? state.plan.days.filter((d) => d.key <= e.start).map((d) => ({ k: d.key, h: toNumber(study.cells[d.key]) })).filter((x) => x.h > 0) : [];
@@ -982,31 +985,40 @@ function examCard(e, tk) {
   const span = firstK ? state.plan.days.filter((d) => d.key >= firstK && d.key <= e.start) : [];
   const max = Math.max(1, ...span.map((d) => Math.max(toNumber(study?.cells[d.key]), loggedOn(e.subject, d.key))));
   const n = daysBetween(tk, e.start);
-  const rooms = (e.task.match(/rooms?\s+([\d,\s]+)/i) || [])[1];
+  const rooms = ((e.task.match(/rooms?\s+([\d,\s]+)/i) || [])[1] || '').trim();
+  // "Physics I Midterm, Rooms 104, 112" -> "Midterm"; "YDS/2 (ÖSYM)" stays as it is.
+  const kind = e.task.replace(/,?\s*rooms?\s+[\d,\s]+$/i, '').replace(e.subject, '').replace(/^[\s,:-]+/, '').trim();
+  const when = [kind, `${dowLabel(e.start)} ${shortLabel(e.start)}${e.time ? ', ' + e.time : ''}`, rooms ? `Rooms ${rooms}` : ''].filter(Boolean);
   const pct = total ? Math.min(100, Math.round((studied / total) * 100)) : 0;
   const gap = dueSoFar - studied;
-  const pace = !study || n < 0 ? '' : gap > 0.25 ? `<span class="pace is-behind">${fmtH(gap)} h behind plan</span>` : dueSoFar > 0 || studied > 0 ? `<span class="pace is-good">${gap < -0.25 ? `${fmtH(-gap)} h ahead of plan` : 'On plan'}</span>` : '';
+  const pace = !study || n < 0 ? '' : gap > 0.25 ? `<span class="pace is-behind">${fmtH(gap)} h behind</span>` : dueSoFar > 0 || studied > 0 ? `<span class="pace is-good">${gap < -0.25 ? `${fmtH(-gap)} h ahead` : 'On plan'}</span>` : '';
+  const count = n < 0 ? '<b>Done</b>' : n === 0 ? '<b>Today</b>' : `<b>${n}</b><small>${n === 1 ? 'day' : 'days'}</small>`;
   return `
     <article class="exam" style="--c:${subjectVar(e.subject)}">
-      <div class="exam-count">${n < 0 ? 'Done' : n === 0 ? 'Today' : `${n}<small>${n === 1 ? 'day' : 'days'}</small>`}</div>
-      <h2 class="exam-subject">${esc(e.subject)}</h2>
-      <p class="exam-when">${esc(longLabel(e.start))}${e.time ? ' at ' + esc(e.time) : ''}${rooms ? `<br>Rooms ${esc(rooms.trim())}` : ''}</p>
-      ${!rooms && e.task !== e.subject ? `<p class="exam-when">${esc(e.task)}</p>` : ''}
-      ${study ? `
-        <div class="progress" role="img" aria-label="${fmtH(studied)} of ${fmtH(total)} planned hours studied">
-          <div class="progress-bar"><span style="width:${pct}%"></span></div>
-          <div class="progress-text"><strong>${fmtH(studied)}</strong> of ${fmtH(total)} h studied, <strong>${fmtH(Math.max(0, total - studied))} h</strong> to go ${pace}</div>
+      <header class="exam-top">
+        <div class="exam-id">
+          <h2 class="exam-subject">${esc(e.subject)}</h2>
+          <p class="exam-when">${when.map(esc).join('<span class="dot" aria-hidden="true"></span>')}</p>
         </div>
+        <div class="exam-count ${n <= 3 && n >= 0 ? 'is-near' : ''}" aria-label="${n < 0 ? 'Finished' : n === 0 ? 'Today' : plural(n, 'day') + ' left'}">${count}</div>
+      </header>
+      ${study ? `
+        <div class="exam-stats">
+          <span class="exam-hours"><b>${fmtH(studied)}</b> / ${fmtH(total)} h</span>
+          ${pace}
+        </div>
+        <div class="progress-bar" role="img" aria-label="${fmtH(studied)} of ${fmtH(total)} planned hours studied"><span style="width:${pct}%"></span></div>
+        ${span.length ? `
         <div class="spark" aria-hidden="true">
           ${span.map((d) => {
             const h = toNumber(study.cells[d.key]);
             const l = d.key <= tk ? loggedOn(e.subject, d.key) : 0;
-            const pctH = (x) => (x ? Math.max(8, (x / max) * 100) : 0);
-            return `<span class="spark-day ${d.key === tk ? 'is-today' : ''}" title="${esc(shortLabel(d.key))}: ${fmtH(h)} h planned${d.key <= tk ? `, ${fmtH(l)} h studied` : ''}"><i class="spark-plan" style="height:${h ? pctH(h) : 2}%"></i>${l ? `<i class="spark-done" style="height:${pctH(l)}%"></i>` : ''}</span>`;
+            const pctH = (x) => (x ? Math.max(10, (x / max) * 100) : 0);
+            return `<span class="spark-day ${d.key === tk ? 'is-today' : ''}" title="${esc(shortLabel(d.key))}: ${fmtH(h)} h planned${d.key <= tk ? `, ${fmtH(l)} h studied` : ''}"><i class="spark-plan" style="height:${h ? pctH(h) : 0}%"></i>${l ? `<i class="spark-done" style="height:${pctH(l)}%"></i>` : ''}</span>`;
           }).join('')}
         </div>
-        <div class="spark-axis"><span>${firstK ? esc(shortLabel(firstK)) : ''}</span><span class="spark-key"><i class="k-plan"></i>Planned <i class="k-done"></i>Studied</span><span>Exam</span></div>
-        ${n >= 0 ? `<button class="add-btn" data-action="log-hours" data-subject="${esc(e.subject)}" data-day="${tk}">${ICON.plus}Log studied time today</button>` : ''}` : ''}
+        <div class="spark-axis"><span>${esc(shortLabel(firstK))}</span><span>Exam</span></div>` : ''}
+        ${n >= 0 ? `<footer class="exam-foot"><button class="log-btn" data-action="log-hours" data-subject="${esc(e.subject)}" data-day="${tk}">${ICON.plus}Log today</button>${total - studied > 0 ? `<span class="exam-left">${fmtH(total - studied)} h to go</span>` : '<span class="exam-left is-good">Plan covered</span>'}</footer>` : ''}` : ''}
     </article>`;
 }
 

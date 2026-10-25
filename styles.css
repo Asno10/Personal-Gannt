@@ -675,12 +675,42 @@ a, .link, .add-btn, .more summary, .tl-more th button { color: var(--accent); }
 .strip-day.is-today.is-selected .sd-num { color: #fff; }
 .sd-num { font-family: var(--font-c); }
 
-/* Exams */
-.exam { border: 0; border-radius: var(--radius); padding: 16px 18px 14px; background: var(--panel); }
-.exam-count { font-family: var(--font-c); font-size: 44px; }
-.exam-count small { font-family: var(--font); font-size: 17px; font-weight: 500; }
-.exam-subject { color: var(--c); font-size: 20px; font-weight: 600; }
-.progress-bar { height: 6px; background: var(--fill); }
+/* Exams: tidy cards */
+.exam-key { display: flex; align-items: center; gap: 6px; margin: -6px 2px 14px; font-size: 13px; color: var(--ink-2); --c: var(--ink-2); }
+.exam-key i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-left: 6px; }
+.exam-key i:first-child { margin-left: 0; }
+.exam-grid { gap: 12px; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); }
+.exam { border: 0; border-radius: var(--radius); padding: 16px 16px 12px; background: var(--panel); display: grid; gap: 10px; }
+.exam-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.exam-id { min-width: 0; }
+.exam-subject { color: var(--ink); font: 600 17px/1.25 var(--font); margin: 0; display: flex; align-items: center; gap: 8px; }
+.exam-subject::before { content: ''; flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--c); }
+.exam-when { margin: 3px 0 0 18px; font-size: 13px; line-height: 1.35; color: var(--ink-2); }
+.exam-when .dot { display: inline-block; width: 3px; height: 3px; border-radius: 50%; background: currentColor; opacity: 0.6; margin: 0 6px 3px; }
+.exam-count { flex: none; text-align: right; line-height: 1; padding-top: 1px; }
+.exam-count b { display: block; font: 700 30px/1 var(--font-c); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.exam-count small { display: block; font: 500 12px/1.3 var(--font); color: var(--ink-2); margin: 2px 0 0; }
+.exam-count.is-near b { color: var(--signal); }
+.exam-stats { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
+.exam-hours { font-size: 15px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.exam-hours b { font: 600 20px/1 var(--font-c); color: var(--ink); }
+.exam .pace { margin: 0; font-size: 12px; padding: 3px 8px; }
+.exam .progress-bar { height: 6px; border-radius: 3px; background: var(--fill); overflow: hidden; margin-top: -2px; }
+.exam .progress-bar span { background: var(--c); border-radius: 3px; }
+.exam .spark { height: 32px; margin-top: 4px; gap: 3px; border-bottom: var(--hair) solid var(--rule); }
+.exam .spark-day { border-radius: 3px 3px 0 0; }
+.exam .spark-day.is-today { box-shadow: none; }
+.exam .spark-day.is-today::after { content: ''; position: absolute; left: 50%; bottom: -6px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: var(--signal); }
+.exam .spark-day i { border-radius: 3px 3px 0 0; }
+.exam .spark-done { left: 0 !important; right: 0 !important; }
+.exam .spark-axis { font-size: 11px; margin-top: 4px; }
+.exam-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 8px; border-top: var(--hair) solid var(--rule); margin-top: 2px; }
+.exam-foot .log-btn { margin: 0; }
+.exam-left { font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.exam-left.is-good { color: var(--s4); font-weight: 500; }
+.exam-grid.is-past .exam { opacity: 0.55; }
+.k-plan { background: color-mix(in srgb, var(--c) 28%, transparent); }
+.k-done { background: var(--c); }
 
 /* Timeline */
 .tl-num { font-family: var(--font-c); }
