@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=13';
-import * as cal from './calendar.js?v=13';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=13';
+import * as api from './sheets.js?v=14';
+import * as cal from './calendar.js?v=14';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=14';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -56,7 +56,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '13';
+const BUILD = '14';
 
 async function checkForUpdate() {
   try {
@@ -1257,7 +1257,15 @@ function renderTimeline() {
 // The timeline is two parts: the date row, pinned under the top bar, and the
 // grid, which scrolls sideways only. Up and down moves the whole page, so a
 // swipe moves along one axis at a time and the dates never drift from the grid.
+// Where the browser supports scroll-driven animations (Safari 26 and later),
+// the date row is moved by the grid's own scrolling, in the same frame, so it
+// can never trail behind. Older browsers fall back to copying the position on
+// each scroll event.
+const NATIVE_FOLLOW = Boolean(window.CSS?.supports?.('animation-timeline: --a') && CSS.supports('timeline-scope: --a'));
+if (NATIVE_FOLLOW) document.documentElement.classList.add('tl-follow');
+
 function syncTimelineHead() {
+  if (NATIVE_FOLLOW) return;
   const sc = $('#tl-scroll');
   const hd = $('#tl-head');
   if (sc && hd && hd.scrollLeft !== sc.scrollLeft) hd.scrollLeft = sc.scrollLeft;

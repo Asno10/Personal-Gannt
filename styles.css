@@ -939,3 +939,16 @@ button.event { width: 100%; text-align: left; }
 .tn.tl-section .tl-count { white-space: nowrap; flex: none; }
 .tk-tall { height: 60px; }
 .tn.tk-tall .tl-label { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.18; font-size: 0.8rem; }
+
+/* ---------- Date row follows the grid natively (build 14) ----------
+   The grid's sideways scroll drives the date row through a scroll timeline,
+   so both move in the same frame. At either end the dates stop while the
+   grid bounces. 100cqw is the visible width of the date row. */
+.tl-follow .tlx { timeline-scope: --tlx-x; }
+.tl-follow .tlx-grid { scroll-timeline: --tlx-x inline; }
+.tl-follow .tlx-dates { container-type: inline-size; }
+.tl-follow .tlx-dates .tlx-in { animation: tlx-follow linear both; animation-timeline: --tlx-x; will-change: transform; }
+@keyframes tlx-follow {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(100cqw - var(--n) * var(--day-w))); }
+}
