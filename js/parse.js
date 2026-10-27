@@ -1,9 +1,11 @@
-// Turns the raw "Gantt" and "Daily Plan" sheet values into a structured plan.
-// The parser reads the layout by its labels (Phase, Subject, Task, Start, End,
-// Hours and the date header), so adding rows, sections or days in the sheet
-// does not require code changes.
-
-const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+// Turns the "Items" table into the plan the views draw from.
+//
+// The Items tab is the database: one row per item, with fixed columns named in
+// its header row (id, type, area, subject, title, date, end, time, minutes,
+// hours, days, status, done_on, priority, notes, calendar, event_id, synced,
+// updated). Columns are found by name, so adding or reordering columns in the
+// sheet does not break the app. Every row is kept; a type the app does not
+// know still shows, under "Other".
 
 export const pad = (n) => String(n).padStart(2, '0');
 export const dateKey = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`;
@@ -12,6 +14,7 @@ export const dateOfKey = (k) => {
   const [y, m, d] = k.split('-').map(Number);
   return new Date(y, m - 1, d);
 };
+export const addDays = (k, n) => { const d = dateOfKey(k); d.setDate(d.getDate() + n); return keyOfDate(d); };
 
 export function colLetter(i) {
   let s = '';
@@ -26,14 +29,6 @@ export function colLetter(i) {
 
 const str = (v) => (v === undefined || v === null ? '' : String(v)).trim();
 
-export function parseDayMonth(s) {
-  const m = str(s).match(/^(\d{1,2})\s+([A-Za-z]{3})[a-z]*\.?(?:\s+(\d{4}))?/);
-  if (!m) return null;
-  const mi = MONTHS.indexOf(m[2].toLowerCase());
-  if (mi < 0) return null;
-  return { d: +m[1], m: mi, y: m[3] ? +m[3] : null };
-}
-
 export function toNumber(v) {
   const s = str(v).replace(',', '.');
   if (s === '') return 0;
@@ -41,195 +36,119 @@ export function toNumber(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function classify(title) {
-  const t = title.toLowerCase();
-  if (/\blog\b|actual hours/.test(t)) return 'log';
-  if (/exercise|workout|training|gym/.test(t)) return 'exercise';
-  if (/todoist|to-?do|tasks?\b/.test(t)) return 'tasks';
-  if (/calendar|events?\b|deadline|holiday/.test(t)) return 'events';
-  if (/commitment|fixed/.test(t)) return 'commitments';
-  if (/^exams?\b/.test(t)) return 'exams';
-  return 'other';
+export const FIELDS = ['id', 'type', 'area', 'subject', 'title', 'date', 'end', 'time', 'minutes', 'hours', 'days', 'status', 'done_on', 'priority', 'notes', 'calendar', 'event_id', 'synced', 'updated'];
+export const KNOWN_TYPES = ['study', 'log', 'reading', 'task', 'exam', 'event', 'exercise', 'note'];
+
+// Accepts 2026-10-27, 2026-10-27T..., or 27.10.2026; anything else is no date.
+export function normDate(v) {
+  const s = str(v);
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return dateKey(+m[1], +m[2] - 1, +m[3]);
+  m = s.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})$/);
+  if (m) return dateKey(+m[3], +m[2] - 1, +m[1]);
+  return '';
 }
 
-// Splits a task cell such as "Do X (P1, open, scheduled Sat 24 Oct)" into its
-// parts: title "Do X", priority "P1", status "open" and note "scheduled Sat 24 Oct".
-// The status group is the last parenthesis holding "open" or "done"; failing that,
-// a trailing parenthesis is read as the note.
-export function splitTask(text) {
-  const t = str(text);
-  const groups = [...t.matchAll(/\(([^()]*)\)/g)];
-  let g = [...groups].reverse().find((m) => /(^|[,;]\s*)(open|done)\b/i.test(m[1].trim()));
-  if (!g) {
-    const last = groups[groups.length - 1];
-    if (last && last.index + last[0].length >= t.length) g = last;
+export function normTime(v) {
+  const m = str(v).match(/^(\d{1,2})[:.](\d{2})/);
+  return m ? `${pad(+m[1])}:${m[2]}` : '';
+}
+
+// "2026-10-27=2.5; 2026-10-28=X" <-> { '2026-10-27': '2.5', '2026-10-28': 'X' }
+export function parseDays(s) {
+  const out = {};
+  for (const part of str(s).split(/[;\n]+/)) {
+    const m = part.trim().match(/^(\d{4}-\d{1,2}-\d{1,2})\s*[=:]\s*(.+)$/);
+    if (m) out[normDate(m[1])] = m[2].trim();
   }
-  if (!g) return { title: t, status: 'open', prio: '', statusPart: '', note: '', doneOn: '', raw: t };
-  const title = (t.slice(0, g.index) + t.slice(g.index + g[0].length)).replace(/\s+/g, ' ').trim();
-  let prio = '';
-  let statusPart = '';
-  const rest = [];
-  for (const p of g[1].split(/\s*[,;]\s*/).map((x) => x.trim()).filter(Boolean)) {
-    if (!prio && /^P\d$/i.test(p)) prio = p.toUpperCase();
-    else if (!statusPart && /^(open|done)\b/i.test(p)) statusPart = p;
-    else rest.push(p);
+  return out;
+}
+export const serializeDays = (cells) => Object.keys(cells).filter((k) => str(cells[k]) !== '').sort().map((k) => `${k}=${cells[k]}`).join('; ');
+
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+export const shortLabel = (k) => { const d = dateOfKey(k); return `${d.getDate()} ${MON[d.getMonth()]}`; };
+
+export function newId(type) {
+  const c = (type || 'i')[0].toLowerCase();
+  const p = { exam: 'x', event: 'v', exercise: 'w' }[type] || (/[a-z]/.test(c) ? c : 'i');
+  const r = Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(36).padStart(2, '0')).join('').slice(0, 6);
+  return `${p}-${r}`;
+}
+
+function parseSettings(rows) {
+  const out = {};
+  for (const r of rows || []) {
+    const k = str(r[0]);
+    if (k && k !== 'key' && /^[a-z_]+$/.test(k)) out[k] = { value: str(r[1]), row: (rows.indexOf(r)) + 1 };
   }
-  const status = /^done/i.test(statusPart) ? 'done' : 'open';
-  const doneOn = status === 'done' ? (statusPart.match(/(\d{1,2}\s+[A-Za-z]{3})/) || [])[1] || '' : '';
-  return { title, status, prio, statusPart, note: rest.join('; '), doneOn, raw: t };
+  return out;
 }
 
-// Rebuilds the task cell from its parts, in the same convention.
-export function composeTask({ title, prio, statusPart, note }) {
-  const parts = [prio, statusPart || 'open', note].map((x) => str(x)).filter(Boolean);
-  return `${str(title)} (${parts.join(', ')})`;
-}
-
-export function parseGantt(rows, formulas = []) {
+export function parseItems(rows, settingsRows, today) {
   rows = rows || [];
-  const title = str((rows[0] || [])[0]);
-  const subtitle = str((rows[1] || [])[0]);
-  const yearMatch = (title + ' ' + subtitle).match(/\b(20\d\d)\b/);
-  let year = yearMatch ? +yearMatch[1] : new Date().getFullYear();
+  const header = (rows[0] || []).map((c) => str(c).toLowerCase());
+  const C = Object.fromEntries(FIELDS.map((f) => [f, header.indexOf(f)]));
+  if (C.id < 0 || C.type < 0) throw new Error('The Items tab has no header row with "id" and "type".');
+  const settings = parseSettings(settingsRows);
 
-  const h = rows.findIndex((r) => str((r || [])[0]).toLowerCase() === 'phase');
-  if (h < 0) throw new Error('The Gantt sheet has no header row starting with "Phase".');
-  const header = rows[h].map(str);
-  const dowRow = (rows[h + 1] || []).map(str);
-  const col = (name) => header.findIndex((c) => c.toLowerCase() === name);
-  const C = {
-    phase: Math.max(col('phase'), 0),
-    subject: col('subject'),
-    task: col('task'),
-    start: col('start'),
-    end: col('end'),
-    hours: col('hours'),
-  };
-
-  const days = [];
-  const firstDay = header.findIndex((c, i) => i > C.task && parseDayMonth(c));
-  let prevM = null;
-  for (let c = firstDay; c >= 0 && c < header.length; c++) {
-    const p = parseDayMonth(header[c]);
-    if (!p) break;
-    if (prevM !== null && p.m < prevM) year++;
-    prevM = p.m;
-    days.push({ col: c, key: dateKey(year, p.m, p.d), label: header[c], dow: dowRow[c] || '' });
-  }
-  const dayByKey = Object.fromEntries(days.map((d) => [d.key, d]));
-  const firstYear = days.length ? +days[0].key.slice(0, 4) : year;
-  const firstMonth = days.length ? +days[0].key.slice(5, 7) - 1 : 0;
-
-  const resolveDate = (s) => {
-    const p = parseDayMonth(s);
-    if (!p) return null;
-    if (p.y) return dateKey(p.y, p.m, p.d);
-    const y = p.m < firstMonth - 2 ? firstYear + 1 : firstYear;
-    return dateKey(y, p.m, p.d);
-  };
-
-  const isFormula = (r, c) => str(((formulas[r] || [])[c])).startsWith('=');
-
-  const sections = [];
-  let section = { title: 'Study plan', type: 'study', items: [], notes: [], headerRow: null };
-  sections.push(section);
-  const summary = [];
-  let inSummary = false;
-  let totalsRow = null;
-
-  for (let r = h + 2; r < rows.length; r++) {
-    const row = (rows[r] || []).map(str);
-    const filled = row.filter((c) => c !== '');
-    if (!filled.length) continue;
-    const a = row[C.phase] || '';
-
-    if (inSummary) {
-      if (row[C.subject] && row[C.task]) summary.push({ subject: row[C.subject], when: row[C.task], planned: row[C.start] });
-      continue;
-    }
-    if (a && filled.length === 1) {
-      if (/^note\b/i.test(a)) {
-        section.notes.push(a.replace(/^note:\s*/i, ''));
-        continue;
-      }
-      section = { title: a, type: classify(a), items: [], notes: [], headerRow: r + 1 };
-      sections.push(section);
-      continue;
-    }
-    if (!a && /^subject$/i.test(row[C.subject] || '')) {
-      inSummary = true;
-      continue;
-    }
-    if (!a && /total/i.test(row[C.task] || '')) {
-      totalsRow = r + 1;
-      continue;
-    }
-
-    const cells = {};
-    for (const d of days) {
-      const v = row[d.col];
-      if (v) cells[d.key] = v;
-    }
-    const item = {
-      row: r + 1,
-      section: section.type,
-      sectionTitle: section.title,
-      phase: a,
-      subject: row[C.subject] || '',
-      task: row[C.task] || '',
-      start: resolveDate(row[C.start]),
-      end: resolveDate(row[C.end]),
-      hours: C.hours >= 0 ? toNumber(row[C.hours]) : 0,
-      cells,
-      lockedDates: isFormula(r, C.start) || isFormula(r, C.end),
-    };
-    if (section.type === 'tasks') Object.assign(item, { status: splitTask(item.task) });
-    section.items.push(item);
-  }
-
-  const itemsOf = (type) => sections.filter((s) => s.type === type).flatMap((s) => s.items);
-  const study = itemsOf('study').filter((i) => Object.keys(i.cells).length || i.hours);
-  const exams = itemsOf('exams').map((e) => {
-    const s = summary.find((x) => x.subject === e.subject);
-    const time = s ? (s.when.match(/\b(\d{1,2}:\d{2})\b/) || [])[1] || '' : '';
-    return { ...e, time };
-  });
-
-  // Study log: one row per subject holding the hours actually studied each day.
-  const logs = itemsOf('log').filter((i) => i.subject);
-
-  return { title, subtitle, header: C, days, dayByKey, sections, study, exams, logs, summary, totalsRow, resolveDate };
-}
-
-export function parseDailyPlan(rows, formulas = []) {
-  rows = rows || [];
-  const header = (rows[0] || []).map(str);
-  const col = (re) => header.findIndex((c) => re.test(c));
-  const C = {
-    date: col(/^date$/i),
-    commitments: col(/commit/i),
-    studyNote: col(/study/i),
-    planned: col(/planned/i),
-    exercise: col(/exercise/i),
-  };
-  const byKey = {};
+  const items = [];
   for (let r = 1; r < rows.length; r++) {
-    const row = (rows[r] || []).map(str);
-    const p = parseDayMonth(row[C.date]);
-    if (!p || !p.y) continue;
-    const k = dateKey(p.y, p.m, p.d);
-    const field = (name) => ({
-      value: C[name] >= 0 ? row[C[name]] || '' : '',
-      col: C[name],
-      locked: C[name] < 0 || str(((formulas[r] || [])[C[name]])).startsWith('='),
-    });
-    byKey[k] = {
-      row: r + 1,
-      commitments: field('commitments'),
-      studyNote: field('studyNote'),
-      exercise: field('exercise'),
-      planned: toNumber(row[C.planned]),
+    const row = rows[r] || [];
+    const get = (f) => (C[f] >= 0 ? str(row[C[f]]) : '');
+    const id = get('id');
+    const type = get('type').toLowerCase();
+    if (!id && !type && !get('title')) continue;
+    const title = get('title');
+    const start = normDate(get('date')) || null;
+    const end = normDate(get('end')) || null;
+    const status = /^done/i.test(get('status')) ? 'done' : 'open';
+    const doneOn = normDate(get('done_on'));
+    const item = {
+      id, row: r + 1, type: type || 'other',
+      area: get('area'), subject: get('subject'), title,
+      start, end: end && start && end < start ? start : end,
+      time: normTime(get('time')),
+      minutes: toNumber(get('minutes')),
+      hours: toNumber(get('hours')),
+      cells: parseDays(get('days')),
+      notes: get('notes'),
+      calendar: (get('calendar') || 'auto').toLowerCase(),
+      eventId: get('event_id'),
+      synced: get('synced'),
+      updated: get('updated'),
+      priority: get('priority').toUpperCase(),
+      doneOn,
     };
+    // Names the views have always used.
+    item.phase = item.area;
+    item.task = title;
+    item.status = { status, title, prio: /^P\d$/.test(item.priority) ? item.priority : '', note: item.notes, doneOn: doneOn ? shortLabel(doneOn) : '' };
+    items.push(item);
   }
-  return { header: C, byKey };
+
+  // The day range: the plan dates from Settings, stretched to cover every item
+  // and at least two weeks past today.
+  const keys = [];
+  for (const i of items) {
+    if (i.start) keys.push(i.start);
+    if (i.end) keys.push(i.end);
+    keys.push(...Object.keys(i.cells));
+  }
+  keys.sort();
+  const s0 = normDate(settings.plan_start?.value);
+  const s1 = normDate(settings.plan_end?.value);
+  const first = s0 || keys[0] || today;
+  let last = [s1, keys.at(-1), addDays(today, 14)].filter(Boolean).sort().at(-1);
+  const days = [];
+  for (let k = first, n = 0; k <= last && n < 400; k = addDays(k, 1), n++) days.push({ key: k, label: shortLabel(k) });
+  const dayByKey = Object.fromEntries(days.map((d) => [d.key, d]));
+
+  const byType = (t) => items.filter((i) => i.type === t);
+  return {
+    header: C, settings, items, days, dayByKey, byType,
+    study: byType('study'),
+    logs: byType('log').filter((i) => i.subject),
+    exams: byType('exam').filter((e) => e.start),
+    other: items.filter((i) => !KNOWN_TYPES.includes(i.type)),
+  };
 }

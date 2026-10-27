@@ -1,6 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=11';
-import { parseGantt, parseDailyPlan, colLetter, keyOfDate, dateOfKey, splitTask, composeTask, toNumber } from './parse.js?v=11';
+import * as api from './sheets.js?v=12';
+import * as cal from './calendar.js?v=12';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=12';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -33,13 +34,14 @@ const store = {
 const state = {
   raw: null,
   plan: null,
-  daily: null,
+  // Google Calendar: status is idle | ok | off | error.
+  cal: { status: 'idle', message: '', calendars: [], byDay: {}, calId: '', lastSync: 0, syncing: false, loadedRange: '' },
   view: store.get('pg.view') || 'today',
   day: todayKey(),
   taskFilter: 'open',
   loadedAt: 0,
   sync: 'idle', // idle | saving | saved | error
-  collapsed: new Set(JSON.parse(store.get('pg.tlCollapsed') || '["commitments"]')),
+  collapsed: new Set(JSON.parse(store.get('pg.tlCollapsed') || '["calendar","other"]')),
   tlShowDone: false,
   showDone: false,
   dirty: false,
@@ -54,7 +56,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '11';
+const BUILD = '12';
 
 async function checkForUpdate() {
   try {
@@ -88,7 +90,7 @@ function renderSignIn(message = '') {
   app.innerHTML = `
     <main class="gate">
       <h1 class="gate-title">Personal Gantt</h1>
-      <p>Your study plan, tasks and deadlines, read live from Google Sheets. Sign in with the Google account that owns the sheet.</p>
+      <p>Your study plan, tasks and deadlines, read live from Google Sheets and kept in step with Google Calendar. Sign in with the Google account that owns the sheet.</p>
       ${message ? `<p class="gate-error" role="alert">${esc(message)}</p>` : ''}
       <button class="btn btn-primary" data-action="sign-in">${returning ? 'Continue with Google' : 'Sign in with Google'}</button>
     </main>`;
@@ -120,16 +122,13 @@ async function refresh({ first = false } = {}) {
   if (first) app.innerHTML = `<main class="gate"><p class="loading">Loading the plan</p></main>`;
   try {
     const raw = await api.loadAll();
-    if (writes.size || inflight) return; // newer local edits are waiting; their own refresh follows
-    const json = JSON.stringify([raw.gantt, raw.daily]);
+    if (writes.size || inflight || pendingOps) return; // newer local edits are waiting; their own refresh follows
+    const json = JSON.stringify([raw.items, raw.settings]);
     const changed = json !== lastRawJson;
     lastRawJson = json;
     state.raw = raw;
     state.loadedAt = Date.now();
-    if (changed || first) {
-      state.plan = parseGantt(raw.gantt, raw.ganttFormulas);
-      state.daily = parseDailyPlan(raw.daily, raw.dailyFormulas);
-    }
+    if (changed || first) state.plan = parseItems(raw.items, raw.settings, todayKey());
     if (first) {
       state.day = clampDay(todayKey());
       render();
@@ -138,11 +137,19 @@ async function refresh({ first = false } = {}) {
     } else {
       renderStatus();
     }
+    afterLoad({ changed: changed || first });
   } catch (e) {
     if (e instanceof api.AuthError) return renderSignIn('Your session ended. Sign in again to continue.');
     if (first || !state.plan) return renderSignIn(e.message);
     toast(e.message);
   }
+}
+
+// After every load: keep the Personal Gantt calendar in step with the items,
+// and fetch the other calendars' events for the days on screen.
+function afterLoad({ changed }) {
+  syncCalendar({ force: changed }).catch(() => {});
+  loadCalendarEvents().catch(() => {});
 }
 
 function clampDay(k) {
@@ -157,28 +164,65 @@ function clampDay(k) {
 // Edits update the screen at once and are sent to the sheet shortly after, in
 // one batch. Several quick taps on a stepper become a single write.
 
-const writes = new Map();
+// Every change is a field of one item, keyed by the item's id, never by a
+// remembered row number: just before writing, the app reads the id column and
+// finds each item's current row, so rows added or removed in the meantime (by
+// Claude, another device, or by hand) cannot send a change to the wrong item.
+
+const writes = new Map(); // "id|field" -> { id, field, value }
 let flushTimer = null;
 let inflight = null;
 let savedTimer = null;
+let pendingOps = 0; // row inserts and deletes in progress
 
-function queue(updates, { delay = 600 } = {}) {
-  for (const u of updates) writes.set(u.range, u.value);
+const nowStamp = () => {
+  const d = new Date();
+  const off = -d.getTimezoneOffset();
+  const p = (n) => String(Math.floor(Math.abs(n))).padStart(2, '0');
+  return `${keyOfDate(d)}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}${off >= 0 ? '+' : '-'}${p(off / 60)}:${p(off % 60)}`;
+};
+
+// Changes item fields on screen at once and queues them for the sheet.
+// fields: { title: 'x', date: '2026-10-28', days: {...cells} } and so on.
+function setFields(item, fields, { delay = 600, quiet = false } = {}) {
+  for (const [f, v] of Object.entries(fields)) {
+    const value = f === 'days' && typeof v === 'object' ? serializeDays(v) : v == null ? '' : String(v);
+    writes.set(`${item.id}|${f}`, { id: item.id, field: f, value });
+  }
+  if (!quiet) writes.set(`${item.id}|updated`, { id: item.id, field: 'updated', value: nowStamp() });
   setSync('saving');
   clearTimeout(flushTimer);
   flushTimer = setTimeout(flush, delay);
 }
 
+const queueQuiet = (item, fields) => setFields(item, fields, { delay: 1500, quiet: true });
+
+const colOf = (field) => state.plan.header[field];
+
 async function flush() {
   clearTimeout(flushTimer);
   if (inflight) await inflight.catch(() => {});
   if (!writes.size) return;
-  const batch = [...writes].map(([range, value]) => ({ range, value }));
+  const batch = [...writes.values()];
   writes.clear();
-  inflight = api.writeCells(batch);
+  inflight = (async () => {
+    const { map } = await api.readIdColumn(colLetter(colOf('id')));
+    const ups = [];
+    const missing = new Set();
+    for (const w of batch) {
+      const row = map.get(w.id);
+      const c = colOf(w.field);
+      if (!row) { missing.add(w.id); continue; }
+      if (c == null || c < 0) continue;
+      ups.push({ range: api.a1(CONFIG.sheets.items, colLetter(c) + row), value: w.value });
+    }
+    if (ups.length) await api.writeCells(ups);
+    return missing;
+  })();
   try {
-    await inflight;
+    const missing = await inflight;
     inflight = null;
+    if (missing.size) toast('An item was removed from the sheet elsewhere, so that change was not saved.');
     if (!writes.size) {
       setSync('saved');
       await refresh();
@@ -192,6 +236,56 @@ async function flush() {
   }
 }
 
+// Adds new rows to the Items table.
+async function addItems(partials, { message } = {}) {
+  await flush();
+  pendingOps++;
+  setSync('saving');
+  const rows = partials.map((p) => {
+    const it = { id: newId(p.type), calendar: 'auto', updated: nowStamp(), ...p };
+    if (it.days && typeof it.days === 'object') it.days = serializeDays(it.days);
+    const header = state.raw.items[0].map((h) => String(h).trim().toLowerCase());
+    return { it, row: header.map((h) => (it[h] == null ? '' : String(it[h]))) };
+  });
+  try {
+    await api.appendRows(rows.map((r) => r.row));
+    pendingOps--;
+    setSync('saved');
+    if (message) toast(message);
+  } catch (e) {
+    pendingOps--;
+    if (e instanceof api.AuthError) { renderSignIn('Your session ended before the item was added. Sign in and add it again.'); return null; }
+    setSync('error');
+    toast(`Not added. ${e.message}`);
+    await refresh();
+    return null;
+  }
+  await refresh();
+  return rows.map((r) => findItem(r.it.id)).filter(Boolean);
+}
+
+// Deletes an item's row, and its calendar event if it has one.
+async function removeItem(item, { message } = {}) {
+  await flush();
+  pendingOps++;
+  setSync('saving');
+  try {
+    if (item.eventId && state.cal.calId && state.cal.status === 'ok') await cal.deleteEvent(state.cal.calId, item.eventId).catch(() => {});
+    const { map } = await api.readIdColumn(colLetter(colOf('id')));
+    const row = map.get(item.id);
+    if (row) await api.deleteRow(state.raw.sheetIds[CONFIG.sheets.items], row);
+    pendingOps--;
+    setSync('saved');
+    if (message) toast(message);
+  } catch (e) {
+    pendingOps--;
+    if (e instanceof api.AuthError) return renderSignIn('Your session ended before the item was deleted. Sign in and try again.');
+    setSync('error');
+    toast(`Not deleted. ${e.message}`);
+  }
+  await refresh();
+}
+
 function setSync(s) {
   state.sync = s;
   clearTimeout(savedTimer);
@@ -199,10 +293,132 @@ function setSync(s) {
   renderStatus();
 }
 
-const gantt = (cell) => api.a1(CONFIG.sheets.gantt, cell);
-const dailyCell = (cell) => api.a1(CONFIG.sheets.dailyPlan, cell);
-const cellRef = (item, dayKey) => gantt(colLetter(state.plan.dayByKey[dayKey].col) + item.row);
-const colRef = (name, row) => gantt(colLetter(state.plan.header[name]) + row);
+// ---------- Google Calendar ----------
+
+const CAL_HIDE = /#holiday@|classroom/; // holidays stay off the plan; class feeds are noise
+const shownCalendars = () => {
+  const saved = store.get('pg.calShown');
+  if (saved) { try { return new Set(JSON.parse(saved)); } catch {} }
+  return null; // default: see defaultShown
+};
+const defaultShown = (c) => !CAL_HIDE.test(c.id) && c.id !== state.cal.calId && !/irec/i.test(c.name || '');
+const isShown = (c) => { const s = shownCalendars(); return c.id !== state.cal.calId && (s ? s.has(c.id) : defaultShown(c)); };
+
+function calFailed(e) {
+  if (e instanceof cal.CalendarOff) {
+    if (state.cal.status !== 'off') { state.cal.status = 'off'; state.cal.message = e.message; render(); }
+    return;
+  }
+  if (e instanceof api.AuthError) return;
+  state.cal.status = 'error';
+  state.cal.message = e.message;
+  renderStatus();
+}
+
+// Brings the Personal Gantt calendar in line with the items: creates, moves or
+// removes events as items change, and deletes events whose item is gone.
+async function syncCalendar({ force = false } = {}) {
+  const c = state.cal;
+  if (c.syncing || !state.plan || !api.hasToken()) return;
+  if (!force && Date.now() - c.lastSync < 60000) return;
+  c.syncing = true;
+  try {
+    if (!c.calendars.length) c.calendars = await cal.listCalendars();
+    const saved = state.plan.settings.calendar_id?.value || '';
+    const { id } = await cal.ensureCalendar(saved || c.calId, CONFIG.calendarName, CONFIG.timeZone, c.calendars);
+    c.calId = id;
+    if (id !== saved) await saveSetting('calendar_id', id);
+    c.status = 'ok';
+    c.message = '';
+
+    const tz = state.plan.settings.timezone?.value || CONFIG.timeZone;
+    let changes = 0;
+    const done = [];
+    const setFields = (item, fields) => done.push([item, fields]);
+    for (const item of state.plan.items) {
+      if (writes.size || inflight || pendingOps) break; // the person is editing; finish next time
+      if (cal.wantsEvent(item)) {
+        const body = cal.eventBody(item, tz);
+        const sig = cal.signature(body);
+        if (item.eventId && item.synced === sig) continue;
+        let ev = null;
+        if (item.eventId) ev = await cal.patchEvent(id, item.eventId, body);
+        if (!ev) {
+          // Another device may have created it a moment ago.
+          const found = await cal.listEvents(id, null, null, { privateProp: `pgId=${item.id}` });
+          ev = found[0] ? await cal.patchEvent(id, found[0].id, body) : null;
+          if (!ev) ev = await cal.insertEvent(id, body);
+          for (const extra of found.slice(1)) await cal.deleteEvent(id, extra.id);
+        }
+        item.eventId = ev.id;
+        item.synced = sig;
+        setFields(item, { event_id: ev.id, synced: sig }, { delay: 1500, quiet: true });
+        changes++;
+      } else if (item.eventId) {
+        await cal.deleteEvent(id, item.eventId);
+        item.eventId = '';
+        item.synced = '';
+        setFields(item, { event_id: '', synced: '' }, { delay: 1500, quiet: true });
+        changes++;
+      }
+    }
+    // Events whose item no longer exists in the sheet.
+    if (state.plan.items.length) {
+      const ids = new Set(state.plan.items.map((i) => i.id));
+      const mine = await cal.listEvents(id, addDays(todayKey(), -120), null);
+      for (const ev of mine) {
+        const pg = ev.extendedProperties?.private?.pgId;
+        if (pg && !ids.has(pg)) { await cal.deleteEvent(id, ev.id); changes++; }
+      }
+    }
+    // Event ids go back to the sheet in one batch, without touching "updated".
+    for (const [item, fields] of done) queueQuiet(item, fields);
+    c.lastSync = Date.now();
+    if (changes) loadCalendarEvents({ force: true }).catch(() => {});
+  } catch (e) {
+    calFailed(e);
+  } finally {
+    c.syncing = false;
+    renderStatus();
+  }
+}
+
+async function saveSetting(key, value) {
+  const s = state.plan.settings[key];
+  const range = s ? api.a1(CONFIG.sheets.settings, `B${s.row}`) : null;
+  if (range) return api.writeCells([{ range, value }]);
+  const rows = state.raw.settings.length;
+  return api.writeCells([{ range: api.a1(CONFIG.sheets.settings, `A${rows + 1}`), value: key }, { range: api.a1(CONFIG.sheets.settings, `B${rows + 1}`), value }]);
+}
+
+// Events from the other calendars, for the days the plan covers.
+async function loadCalendarEvents({ force = false } = {}) {
+  const c = state.cal;
+  if (!state.plan || !api.hasToken() || c.status === 'off') return;
+  const days = state.plan.days;
+  if (!days.length) return;
+  const range = `${days[0].key}|${days.at(-1).key}|${[...(shownCalendars() || [])].join(',')}`;
+  if (!force && c.loadedRange === range && Date.now() - (c.eventsAt || 0) < 5 * 60000) return;
+  try {
+    if (!c.calendars.length) c.calendars = await cal.listCalendars();
+    const list = c.calendars.filter(isShown);
+    const byDay = {};
+    await Promise.all(list.map(async (cl) => {
+      const evs = await cal.listEvents(cl.id, days[0].key, days.at(-1).key);
+      for (const ev of evs) for (const d of cal.toDayEvents(ev, cl)) (byDay[d.key] ||= []).push(d);
+    }));
+    for (const k of Object.keys(byDay)) byDay[k].sort((a, b) => (a.allDay === b.allDay ? (a.time || '').localeCompare(b.time || '') : a.allDay ? -1 : 1));
+    c.byDay = byDay;
+    c.loadedRange = range;
+    c.eventsAt = Date.now();
+    if (c.status !== 'ok') c.status = 'ok';
+    render();
+  } catch (e) {
+    calFailed(e);
+  }
+}
+
+const calEventsOn = (k) => state.cal.byDay[k] || [];
 
 // ---------- Subject colours ----------
 
@@ -405,9 +621,15 @@ function renderStatus() {
 
 // ---------- Shared queries ----------
 
-const allTasks = () => state.plan.sections.filter((s) => s.type === 'tasks').flatMap((s) => s.items);
-const ofType = (type) => state.plan.sections.filter((s) => s.type === type).flatMap((s) => s.items);
-const findItem = (row) => state.plan.sections.flatMap((s) => s.items).find((i) => i.row === +row);
+const ofType = (type) => state.plan.byType(type);
+const allTasks = () => ofType('task');
+const findItem = (id) => state.plan?.items.find((i) => i.id === id);
+const readings = () => ofType('reading');
+const readingsOn = (k) => readings().filter((r) => r.start === k);
+const notesOn = (k) => ofType('note').filter((n) => coversDay(n, k));
+const exerciseOn = (k) => ofType('exercise').filter((e) => e.cells[k]);
+const EX_MARK = { A: 'Day A: upper body and scapular', B: 'Day B: lower body, core and back', L: 'Light posture block', W: 'Weigh-in' };
+const exLabel = (v) => EX_MARK[String(v).toUpperCase()] || v;
 
 const studyHoursOn = (k) => state.plan.study.reduce((n, s) => n + toNumber(s.cells[k]), 0);
 const studyOn = (k) => state.plan.study.map((s) => ({ item: s, hours: toNumber(s.cells[k]) })).filter((x) => x.hours > 0);
@@ -561,15 +783,20 @@ function renderToday() {
   // On past days and today, subjects studied without a plan show up too.
   const study = [...planned, ...(canLog ? state.plan.study.filter((s) => !planned.some((x) => x.item === s) && loggedOn(s.subject, k) > 0).map((item) => ({ item, hours: 0 })) : [])];
   const logged = canLog ? loggedOnDay(k) : 0;
-  const daily = state.daily.byKey[k];
   const tasks = tasksOn(k);
   const open = tasks.filter((t) => t.status.status === 'open');
   const done = tasks.filter((t) => t.status.status === 'done');
   const overdue = isToday ? allTasks().filter((t) => isOverdue(t) && !tasks.includes(t)) : [];
-  const events = ofType('events').filter((e) => coversDay(e, k));
-  const exercise = ofType('exercise').filter((e) => !/weigh/i.test(e.subject) && coversDay(e, k));
+  const reads = readingsOn(k);
+  const readsDone = reads.filter((r) => r.status.status === 'done').length;
+  const readsLate = isToday ? readings().filter((r) => r.status.status === 'open' && r.start && r.start < k) : [];
+  const events = ofType('event').filter((e) => coversDay(e, k)).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+  const calEvents = calEventsOn(k);
+  const exercise = exerciseOn(k);
+  const phase = ofType('exercise').find((e) => !/weigh/i.test(e.subject) && e.start && e.start <= k && k <= (e.end || e.start));
+  const notes = notesOn(k);
+  const other = state.plan.other.filter((o) => coversDay(o, k));
   const others = state.plan.study.filter((s) => !study.some((x) => x.item === s));
-  const dt = dateOfKey(k);
 
   return `
     <h1 class="day-title">${esc(longLabel(k))}</h1>
@@ -582,15 +809,24 @@ function renderToday() {
         <span class="block-meta">${total ? fmtH(total) + ' h planned' : 'Nothing planned'}${canLog && (total || logged) ? `, <b class="${logged >= total && logged ? 'is-good' : ''}">${fmtH(logged)} h studied</b>` : ''}</span>
       </div>
       <ul class="study-list">${study.map(({ item, hours }) => studyRow(item, hours, k)).join('')}</ul>
-      ${daily?.studyNote.value && !/^none/i.test(daily.studyNote.value) ? `<p class="note">${esc(daily.studyNote.value)}</p>` : ''}
       ${others.length ? `
         <div class="add-row">
           <span class="add-label">${canLog ? 'Log time for another subject' : 'Add a subject'}</span>
           <div class="chips">${others.map((s) => canLog
             ? `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="log-hours" data-subject="${esc(s.subject)}" data-day="${k}" aria-label="Log time for ${esc(s.subject)}">${esc(s.subject)}</button>`
-            : `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="hours" data-row="${s.row}" data-day="${k}" data-delta="1" aria-label="Add 1 hour of ${esc(s.subject)}">${esc(s.subject)}</button>`).join('')}</div>
+            : `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="hours" data-id="${s.id}" data-day="${k}" data-delta="1" aria-label="Add 1 hour of ${esc(s.subject)}">${esc(s.subject)}</button>`).join('')}</div>
         </div>` : ''}
     </section>
+
+    ${reads.length || readsLate.length ? `
+    <section class="block">
+      <div class="block-head">
+        <h2>Reading</h2>
+        <span class="block-meta">${reads.length ? `${readsDone} of ${reads.length} done, ${fmtH(reads.reduce((n, r) => n + r.hours, 0))} h` : ''}</span>
+      </div>
+      <ul class="task-list">${reads.map((r) => taskRow(r, { hideDate: true, reading: true })).join('')}</ul>
+      ${readsLate.length ? `<h3 class="sub is-alert">Not read yet</h3><ul class="task-list">${readsLate.map((r) => taskRow(r, { reading: true })).join('')}</ul>` : ''}
+    </section>` : ''}
 
     <section class="block">
       <div class="block-head">
@@ -605,20 +841,45 @@ function renderToday() {
       <button class="add-btn" data-action="add-task" data-day="${k}">${ICON.plus}Add a task for ${esc(relDay(k).toLowerCase().startsWith('to') || relDay(k) === 'Yesterday' ? relDay(k).toLowerCase() : 'this day')}</button>
     </section>
 
-    ${daily || events.length ? `
     <section class="block">
-      <div class="block-head"><h2>Commitments</h2></div>
-      ${daily ? editableLine(daily.commitments, daily.row, 'Fixed commitments', k, 'No fixed commitments. Tap to add.') : ''}
-      ${events.map((e) => `<div class="event ${/deadline/i.test(e.subject) || e.cells[k] === '!' ? 'is-alert' : ''}"><span class="event-kind">${esc(e.subject || e.phase)}</span><span>${esc(e.task)}</span></div>`).join('')}
+      <div class="block-head"><h2>Calendar</h2><span class="block-meta">${calMeta()}</span></div>
+      ${events.map((e) => eventLine(e, k)).join('')}
+      ${calEvents.map((e) => `<div class="event is-cal" style="--c:${esc(e.color || 'var(--ink-3)')}"><span class="event-kind">${e.allDay ? 'All day' : esc(e.time + (e.endTime ? ' to ' + e.endTime : ''))}</span><span>${esc(e.title)}<small class="event-cal">${esc(e.calName)}</small></span></div>`).join('')}
+      ${!events.length && !calEvents.length ? `<p class="note is-quiet">${state.cal.status === 'ok' ? 'Nothing in your calendars.' : state.cal.status === 'off' ? 'Calendar not connected. See Account.' : 'Loading calendars.'}</p>` : ''}
+    </section>
+
+    <section class="block">
+      <div class="block-head"><h2>Notes</h2></div>
+      ${notes.map((n) => `<button class="line" data-action="edit-note" data-id="${n.id}" data-day="${k}">${esc(n.title)}<span class="line-edit">${ICON.pen}</span></button>`).join('')}
+      <button class="line is-empty" data-action="edit-note" data-day="${k}">${notes.length ? 'Add another note' : 'Nothing noted for this day. Tap to add.'}<span class="line-edit">${ICON.pen}</span></button>
+    </section>
+
+    ${exercise.length || phase ? `
+    <section class="block">
+      <div class="block-head"><h2>Exercise</h2>${phase ? `<span class="block-meta">${esc(phase.subject)}</span>` : ''}</div>
+      ${exercise.map((e) => `<button class="line" data-action="edit-cell" data-id="${e.id}" data-day="${k}"><strong>${esc(exLabel(e.cells[k]))}</strong><span class="line-edit">${ICON.pen}</span></button>`).join('')}
+      ${!exercise.some((e) => !/weigh/i.test(e.subject)) && phase ? `<button class="line is-empty" data-action="edit-cell" data-id="${phase.id}" data-day="${k}">Rest day. Tap to plan a session.<span class="line-edit">${ICON.pen}</span></button>` : ''}
+      ${phase ? `<p class="note">${esc(phase.title)}</p>` : ''}
     </section>` : ''}
 
-    ${daily || exercise.length ? `
+    ${other.length ? `
     <section class="block">
-      <div class="block-head"><h2>Exercise</h2></div>
-      ${daily ? editableLine(daily.exercise, daily.row, 'Exercise', k, 'Rest day. Tap to add a session.') : ''}
-      ${exercise.map((e) => `<p class="note"><strong>${esc(e.subject)}.</strong> ${esc(e.task)}</p>`).join('')}
+      <div class="block-head"><h2>Other</h2></div>
+      <ul class="task-list">${other.map((o) => taskRow(o, { hideDate: true })).join('')}</ul>
     </section>` : ''}
   `;
+}
+
+function calMeta() {
+  const c = state.cal;
+  if (c.status === 'off') return 'Not connected';
+  if (c.status === 'error') return 'Could not load';
+  return '';
+}
+
+function eventLine(e, k) {
+  const alert = /deadline/i.test(e.subject);
+  return `<button class="event ${alert ? 'is-alert' : ''}" data-action="edit-task" data-id="${e.id}"><span class="event-kind">${esc(e.time || e.subject || 'Event')}</span><span>${esc(e.title)}${e.time && e.subject ? `<small class="event-cal">${esc(e.subject)}</small>` : ''}</span></button>`;
 }
 
 function renderStrip() {
@@ -678,44 +939,42 @@ function studyRow(item, hours, k) {
     <li class="study" style="--c:${subjectVar(item.subject)}">
       <span class="study-swatch" aria-hidden="true"></span>
       <div class="study-main">
-        <button class="study-name" data-action="edit-hours" data-row="${item.row}" data-day="${k}">${esc(item.subject)}</button>
+        <button class="study-name" data-action="edit-hours" data-id="${item.id}" data-day="${k}">${esc(item.subject)}</button>
         ${k <= todayKey() ? (() => {
           const l = loggedOn(item.subject, k);
           return `<button class="log-btn ${l ? 'is-logged' : ''} ${l && l >= hours ? 'is-good' : ''}" data-action="log-hours" data-subject="${esc(item.subject)}" data-day="${k}">${l ? `${ICON.check}Studied ${fmtH(l)} h` : `${ICON.plus}Log studied time`}</button>`;
         })() : ''}
       </div>
       <span class="stepper">
-        <button class="step" data-action="hours" data-row="${item.row}" data-day="${k}" data-delta="-0.5" aria-label="Half an hour less ${esc(item.subject)}">${ICON.minus}</button>
-        <button class="study-hours" data-action="edit-hours" data-row="${item.row}" data-day="${k}" aria-label="${fmtH(hours)} hours planned, tap to change">${fmtH(hours)}<small>h</small></button>
-        <button class="step" data-action="hours" data-row="${item.row}" data-day="${k}" data-delta="0.5" aria-label="Half an hour more ${esc(item.subject)}">${ICON.plus}</button>
+        <button class="step" data-action="hours" data-id="${item.id}" data-day="${k}" data-delta="-0.5" aria-label="Half an hour less ${esc(item.subject)}">${ICON.minus}</button>
+        <button class="study-hours" data-action="edit-hours" data-id="${item.id}" data-day="${k}" aria-label="${fmtH(hours)} hours planned, tap to change">${fmtH(hours)}<small>h</small></button>
+        <button class="step" data-action="hours" data-id="${item.id}" data-day="${k}" data-delta="0.5" aria-label="Half an hour more ${esc(item.subject)}">${ICON.plus}</button>
       </span>
     </li>`;
 }
 
-function taskRow(t, { hideDate = false } = {}) {
+function taskRow(t, { hideDate = false, reading = false } = {}) {
   const st = t.status;
   const done = st.status === 'done';
   const due = taskDue(t);
   const overdue = isOverdue(t);
   const lateBy = overdue ? daysBetween(due, todayKey()) : 0;
-  const where = [t.phase, t.subject].filter(Boolean).join(', ');
+  const isRead = reading || t.type === 'reading';
+  const where = isRead
+    ? [t.subject, t.hours ? fmtH(t.hours) + ' h' : ''].filter(Boolean).join(', ')
+    : [t.time, t.phase, t.subject].filter(Boolean).join(', ');
   return `
-    <li class="task ${done ? 'is-done' : ''} ${state.justToggled === t.row ? 'is-popping' : ''}">
-      <button class="check" data-action="toggle-task" data-row="${t.row}" role="checkbox" aria-checked="${done}" aria-label="${done ? 'Mark as not done' : 'Mark as done'}: ${esc(st.title)}">${ICON.check}</button>
-      <button class="task-body" data-action="edit-task" data-row="${t.row}">
+    <li class="task ${done ? 'is-done' : ''} ${isRead ? 'is-reading' : ''} ${state.justToggled === t.id ? 'is-popping' : ''}" ${isRead ? `style="--c:${subjectVar(t.subject)}"` : ''}>
+      <button class="check" data-action="toggle-task" data-id="${t.id}" role="checkbox" aria-checked="${done}" aria-label="${done ? 'Mark as not done' : 'Mark as done'}: ${esc(st.title)}">${ICON.check}</button>
+      <button class="task-body" data-action="edit-task" data-id="${t.id}">
         <span class="task-title">${st.prio ? `<span class="prio prio-${esc(st.prio.slice(1))}">${esc(st.prio)}</span>` : ''}${esc(st.title)}</span>
         ${st.note ? `<span class="task-note">${esc(st.note)}</span>` : ''}
         <span class="task-meta">${esc(where)}</span>
       </button>
       ${done
         ? `<span class="due is-done">${st.doneOn ? 'Done ' + esc(st.doneOn) : 'Done'}</span>`
-        : hideDate && !overdue ? '' : `<button class="due ${overdue ? 'is-late' : ''}" data-action="move-task" data-row="${t.row}" aria-label="Change date">${due ? (overdue ? `${plural(lateBy, 'day')} late` : esc(relDay(due))) : 'No date'}</button>`}
+        : hideDate && !overdue ? '' : `<button class="due ${overdue ? 'is-late' : ''}" data-action="move-task" data-id="${t.id}" aria-label="Change date">${due ? (overdue ? `${plural(lateBy, 'day')} late` : esc(relDay(due))) : 'No date'}</button>`}
     </li>`;
-}
-
-function editableLine(field, row, label, k, empty) {
-  if (field.col < 0) return '';
-  return `<button class="line ${field.value ? '' : 'is-empty'}" ${field.locked ? 'disabled' : ''} data-action="edit-text" data-range="${esc(dailyCell(colLetter(field.col) + row))}" data-label="${esc(label)}" data-sub="${esc(longLabel(k))}" data-value="${esc(field.value)}">${field.value ? esc(field.value) : esc(empty)}${field.locked ? '' : `<span class="line-edit">${ICON.pen}</span>`}</button>`;
 }
 
 // ---------- Timeline ----------
@@ -799,7 +1058,7 @@ function renderTimeline() {
       const inner = isExam
         ? `<span class="tl-exam-pill">Exam${exam.time ? `<small>${esc(exam.time)}</small>` : ''}</span>`
         : h ? `<span class="tl-h" style="--a:${Math.round(18 + 40 * (h / maxH))}%">${fmtH(h)}</span>` : '';
-      return `<td class="${colCls(k)} ${run && !h && !isExam ? 'is-run' : ''}"><button class="tl-cell" data-action="edit-hours" data-row="${s.row}" data-day="${k}" aria-label="${esc(s.subject)}, ${esc(longLabel(k))}: ${isExam ? 'exam, ' : ''}${h ? fmtH(h) + ' hours planned' : 'no study planned'}${lg ? `, ${fmtH(lg)} studied` : ''}">${inner}${badge}</button></td>`;
+      return `<td class="${colCls(k)} ${run && !h && !isExam ? 'is-run' : ''}"><button class="tl-cell" data-action="edit-hours" data-id="${s.id}" data-day="${k}" aria-label="${esc(s.subject)}, ${esc(longLabel(k))}: ${isExam ? 'exam, ' : ''}${h ? fmtH(h) + ' hours planned' : 'no study planned'}${lg ? `, ${fmtH(lg)} studied` : ''}">${inner}${badge}</button></td>`;
     }).join('');
     return line({ cls: 'tl-study', color: subjectVar(s.subject), name: s.subject, sub: `${fmtH(total)} h${exam ? `, exam ${shortLabel(exam.start)}` : ''}`, cells });
   });
@@ -818,14 +1077,14 @@ function renderTimeline() {
     const cells = days.map((d) => {
       const on = pd.length ? pd.includes(d.key) : t.start === d.key;
       const inner = on ? (isDone ? `<span class="tl-done">${ICON.check}</span>` : '<span class="tl-dot"></span>') : '';
-      return `<td class="${colCls(d.key)}"><button class="tl-cell" data-action="task-day" data-row="${t.row}" data-day="${d.key}" aria-label="${esc(t.status.title)}, ${esc(longLabel(d.key))}: ${on ? 'planned' : 'not planned'}">${inner}</button></td>`;
+      return `<td class="${colCls(d.key)}"><button class="tl-cell" data-action="task-day" data-id="${t.id}" data-day="${d.key}" aria-label="${esc(t.status.title)}, ${esc(longLabel(d.key))}: ${on ? 'planned' : 'not planned'}">${inner}</button></td>`;
     }).join('');
     const late = isOverdue(t);
     return line({
       cls: `tl-tasks ${isDone ? 'is-done' : ''} ${late ? 'is-late' : ''}`,
       name: t.status.title,
       sub: isDone ? 'Done' : late ? `${plural(daysBetween(taskDue(t), tk), 'day')} late` : [t.phase, t.subject].filter(Boolean).join(', '),
-      action: `data-action="edit-task" data-row="${t.row}"`, cells,
+      action: `data-action="edit-task" data-id="${t.id}"`, cells,
     });
   };
   const taskRows = open.map(taskLine);
@@ -835,45 +1094,65 @@ function renderTimeline() {
     if (state.tlShowDone) taskRows.push(...done.map(taskLine));
   }
 
-  // Calendar: holidays, milestones and deadlines as bars.
-  const eventRows = ofType('events').map((e) => {
-    const alert = /deadline/i.test(e.subject);
+  // Reading plans: one row per reading, a dot on its day, by subject colour.
+  const readRows = readings().slice().sort((x, y) => (x.subject + (x.start || '9')).localeCompare(y.subject + (y.start || '9'))).map((r) => {
+    const isDone = r.status.status === 'done';
+    const late = isOverdue(r);
     return line({
-      cls: `tl-events ${alert ? 'is-alert' : ''}`, name: e.task.replace(/\s*\(.*\)\s*$/, ''), sub: e.subject,
-      cells: days.map((d) => `<td class="${colCls(d.key)}">${coversDay(e, d.key) ? `<span class="tl-bar ${alert || e.cells[d.key] === '!' ? 'is-alert' : ''}"></span>` : ''}</td>`).join(''),
+      cls: `tl-tasks tl-reading ${isDone ? 'is-done' : ''} ${late ? 'is-late' : ''}`, color: subjectVar(r.subject),
+      name: r.title, sub: [r.subject, r.hours ? fmtH(r.hours) + ' h' : '', isDone ? 'done' : late ? 'not read yet' : ''].filter(Boolean).join(', '),
+      action: `data-action="edit-task" data-id="${r.id}"`,
+      cells: days.map((d) => {
+        const on = r.start === d.key;
+        const inner = on ? (isDone ? `<span class="tl-done">${ICON.check}</span>` : '<span class="tl-dot tl-dot-sub"></span>') : '';
+        return `<td class="${colCls(d.key)}"><button class="tl-cell" data-action="task-day" data-id="${r.id}" data-day="${d.key}" aria-label="${esc(r.title)}, ${esc(longLabel(d.key))}: ${on ? 'planned' : 'not planned'}">${inner}</button></td>`;
+      }).join(''),
     });
   });
 
-  // Exercise: one row from the Daily Plan, tinted by training phase.
-  const phases = ofType('exercise').filter((e) => !/weigh/i.test(e.subject));
-  const exerciseRows = Object.keys(state.daily.byKey).length || phases.length ? [line({
-    cls: 'tl-exercise', name: 'Exercise', sub: phases.map((p) => p.subject.replace(/^Phase \d+\s*/i, '')).join(', ') || 'From the Daily Plan',
-    cells: days.map((d) => {
-      const dp = state.daily.byKey[d.key];
-      const ab = exerciseAbbr(dp?.exercise.value);
-      const inPhase = phases.some((p) => p.start <= d.key && d.key <= p.end);
-      const inner = ab ? `<span class="tl-ex">${esc(ab)}</span>` : '';
-      const cls = `${colCls(d.key)} ${inPhase ? 'is-phase' : ''}`;
-      return dp && !dp.exercise.locked && dp.exercise.col >= 0
-        ? `<td class="${cls}"><button class="tl-cell" data-action="edit-text" data-range="${esc(dailyCell(colLetter(dp.exercise.col) + dp.row))}" data-label="Exercise" data-sub="${esc(longLabel(d.key))}" data-value="${esc(dp.exercise.value)}" aria-label="Exercise, ${esc(longLabel(d.key))}: ${esc(dp.exercise.value || 'none')}">${inner}</button></td>`
-        : `<td class="${cls}">${inner}</td>`;
-    }).join(''),
-  })] : [];
+  // Deadlines and events kept in the sheet.
+  const eventRows = ofType('event').map((e) => {
+    const alert = /deadline/i.test(e.subject);
+    return line({
+      cls: `tl-events ${alert ? 'is-alert' : ''}`, name: e.title, sub: [e.subject, e.time].filter(Boolean).join(', '),
+      action: `data-action="edit-task" data-id="${e.id}"`,
+      cells: days.map((d) => `<td class="${colCls(d.key)}">${coversDay(e, d.key) ? `<span class="tl-bar ${alert ? 'is-alert' : ''}"></span>` : ''}</td>`).join(''),
+    });
+  });
 
-  // Fixed commitments: classes and marked days.
-  const commitRows = ofType('commitments').map((c) => line({
-    cls: 'tl-commit', name: c.subject || c.task, sub: c.task,
+  // The other Google calendars: one row each, with that day's event count.
+  const calRows = state.cal.calendars.filter(isShown).map((cl) => line({
+    cls: 'tl-commit tl-cal', color: cl.color, name: cl.name, sub: 'Google Calendar',
     cells: days.map((d) => {
-      const v = c.cells[d.key] || '';
-      const inner = v ? `<span class="tl-mark ${v === '!' ? 'is-alert' : ''}">${/^c$/i.test(v) ? 'Class' : esc(v)}</span>` : '';
-      return `<td class="${colCls(d.key)}"><button class="tl-cell" data-action="edit-cell" data-row="${c.row}" data-day="${d.key}" aria-label="${esc(c.subject)}, ${esc(longLabel(d.key))}: ${esc(v || 'nothing')}">${inner}</button></td>`;
+      const evs = calEventsOn(d.key).filter((e) => e.calId === cl.id);
+      const inner = evs.length ? `<span class="tl-mark tl-calmark">${evs.length > 1 ? evs.length : esc(evs[0].time || 'All')}</span>` : '';
+      return `<td class="${colCls(d.key)}">${evs.length ? `<button class="tl-cell" data-action="open-day" data-day="${d.key}" aria-label="${esc(cl.name)}, ${esc(longLabel(d.key))}: ${plural(evs.length, 'event')}">${inner}</button>` : ''}</td>`;
     }).join(''),
+  })).filter(() => state.cal.status === 'ok');
+
+  // Exercise: one row per programme phase and the weigh-ins.
+  const exerciseRows = ofType('exercise').map((x) => line({
+    cls: 'tl-exercise', name: x.subject || x.title, sub: x.start ? `${shortLabel(x.start)} to ${shortLabel(x.end || x.start)}` : '',
+    action: `data-action="edit-task" data-id="${x.id}"`,
+    cells: days.map((d) => {
+      const v = x.cells[d.key] || '';
+      const inPhase = x.start && x.start <= d.key && d.key <= (x.end || x.start);
+      return `<td class="${colCls(d.key)} ${inPhase && !/weigh/i.test(x.subject) ? 'is-phase' : ''}"><button class="tl-cell" data-action="edit-cell" data-id="${x.id}" data-day="${d.key}" aria-label="${esc(x.subject)}, ${esc(longLabel(d.key))}: ${esc(v ? exLabel(v) : 'nothing')}">${v ? `<span class="tl-ex">${esc(v)}</span>` : ''}</button></td>`;
+    }).join(''),
+  }));
+
+  // Anything of a type the app does not know yet, so nothing in the sheet is hidden.
+  const otherRows = [...state.plan.other, ...ofType('note')].map((o) => line({
+    cls: 'tl-tasks', name: o.title || o.subject || o.id, sub: o.type,
+    action: `data-action="edit-task" data-id="${o.id}"`,
+    cells: days.map((d) => `<td class="${colCls(d.key)}">${coversDay(o, d.key) ? '<span class="tl-dot"></span>' : ''}</td>`).join(''),
   }));
 
   // Both tables share these column widths, so the dates line up with the cells below.
   const cols = `<colgroup><col class="tl-col-name">${days.map(() => '<col class="tl-col-day">').join('')}</colgroup>`;
 
   const studyTotal = state.plan.study.reduce((n, s) => n + Object.values(s.cells).reduce((m, v) => m + toNumber(v), 0), 0);
+  const readOpen = readings().filter((r) => r.status.status === 'open').length;
   // What a closed section still shows on each day.
   const preview = {
     study(k) {
@@ -887,27 +1166,37 @@ function renderTimeline() {
       if (o) return `<button class="tl-cell" data-action="open-day" data-day="${k}" aria-label="${plural(o, 'open task')} on ${esc(longLabel(k))}"><span class="tl-dot ${o > 1 ? 'is-many' : ''}">${o > 1 ? o : ''}</span></button>`;
       return on.length ? `<span class="tl-done is-faint">${ICON.check}</span>` : '';
     },
+    reading(k) {
+      const on = readingsOn(k);
+      const o = on.filter((t) => t.status.status === 'open').length;
+      if (o) return `<button class="tl-cell" data-action="open-day" data-day="${k}" aria-label="${plural(o, 'reading')} on ${esc(longLabel(k))}"><span class="tl-dot tl-dot-sub ${o > 1 ? 'is-many' : ''}">${o > 1 ? o : ''}</span></button>`;
+      return on.length ? `<span class="tl-done is-faint">${ICON.check}</span>` : '';
+    },
     events(k) {
-      const ev = ofType('events').filter((e) => coversDay(e, k));
-      return ev.length ? `<span class="tl-bar ${ev.some((e) => /deadline/i.test(e.subject) || e.cells[k] === '!') ? 'is-alert' : ''}"></span>` : '';
+      const ev = ofType('event').filter((e) => coversDay(e, k));
+      return ev.length ? `<span class="tl-bar ${ev.some((e) => /deadline/i.test(e.subject)) ? 'is-alert' : ''}"></span>` : '';
+    },
+    calendar(k) {
+      const n = calEventsOn(k).length;
+      return n ? `<button class="tl-cell" data-action="open-day" data-day="${k}" aria-label="${plural(n, 'calendar event')} on ${esc(longLabel(k))}"><span class="tl-mark tl-calmark">${n}</span></button>` : '';
     },
     exercise(k) {
-      const ab = exerciseAbbr(state.daily.byKey[k]?.exercise.value);
-      return ab ? `<span class="tl-ex">${esc(ab)}</span>` : '';
+      const marks = exerciseOn(k).map((e) => e.cells[k]);
+      return marks.length ? `<span class="tl-ex">${esc(marks.join(' '))}</span>` : '';
     },
-    commitments(k) {
-      const vs = ofType('commitments').map((c) => c.cells[k]).filter(Boolean);
-      if (!vs.length) return '';
-      return `<span class="tl-mark ${vs.includes('!') ? 'is-alert' : ''}">${vs.includes('!') ? '!' : vs.some((v) => /^c$/i.test(v)) ? 'Class' : esc(vs[0])}</span>`;
+    other(k) {
+      return [...state.plan.other, ...ofType('note')].some((o) => coversDay(o, k)) ? '<span class="tl-dot"></span>' : '';
     },
   };
 
   const body = [
     section('study', 'Study', `${fmtH(studyTotal)} h`, [...study, ...lonelyExams], preview.study),
+    section('reading', 'Reading', `${readOpen} open`, readRows, preview.reading),
     section('tasks', 'Tasks', `${open.length} open`, taskRows, preview.tasks),
-    section('events', 'Calendar', plural(eventRows.length, 'event'), eventRows, preview.events),
+    section('events', 'Deadlines and events', plural(eventRows.length, 'item'), eventRows, preview.events),
+    section('calendar', 'Google Calendar', '', calRows, preview.calendar),
     section('exercise', 'Exercise', '', exerciseRows, preview.exercise),
-    section('commitments', 'Fixed commitments', '', commitRows, preview.commitments),
+    section('other', 'Other', plural(otherRows.length, 'item'), otherRows, preview.other),
   ].join('');
 
   return `
@@ -918,6 +1207,7 @@ function renderTimeline() {
       <span><i class="lg-exam">Exam</i>Exam day</span>
       <span><i class="tl-dot"></i>Task planned</span>
       <span><i class="lg-bar"></i>Event</span>
+      <span><i class="tl-mark tl-calmark lg-cal">2</i>Calendar</span>
     </div>
     <div class="tl-head-wrap" id="tl-head" aria-hidden="false">
       <table class="tl" style="--n:${days.length}">${cols}<thead>${head}</thead></table>
@@ -1018,7 +1308,7 @@ function examCard(e, tk) {
   const span = firstK ? state.plan.days.filter((d) => d.key >= firstK && d.key <= e.start) : [];
   const max = Math.max(1, ...span.map((d) => Math.max(toNumber(study?.cells[d.key]), loggedOn(e.subject, d.key))));
   const n = daysBetween(tk, e.start);
-  const rooms = ((e.task.match(/rooms?\s+([\d,\s]+)/i) || [])[1] || '').trim();
+  const rooms = (((e.notes + ' ' + e.task).match(/rooms?\s+([\d,\s]+)/i) || [])[1] || '').trim().replace(/,$/, '');
   // Leave out "Midterm" (they all are); keep names such as "YDS/2 (ÖSYM)".
   const base = e.task.replace(/,?\s*rooms?\s+[\d,\s]+$/i, '').trim();
   const rest = base.startsWith(e.subject + ' ') ? base.slice(e.subject.length).trim() : base;
@@ -1028,6 +1318,9 @@ function examCard(e, tk) {
   const gap = dueSoFar - studied;
   const pace = !study || n < 0 ? '' : gap > 0.25 ? `<span class="pace-t is-behind">${fmtH(gap)} h behind</span>` : studied >= total && total ? '<span class="pace-t is-good">Plan covered</span>' : dueSoFar > 0 || studied > 0 ? `<span class="pace-t is-good">${gap < -0.25 ? `${fmtH(-gap)} h ahead` : 'On plan'}</span>` : '';
   const open = state.examOpen?.has(e.subject);
+  const reads = readings().filter((r) => r.subject === e.subject && (!r.start || r.start <= e.start));
+  const readsDone = reads.filter((r) => r.status.status === 'done').length;
+  const readsLate = reads.filter((r) => isOverdue(r)).length;
   const count = n < 0 ? '<b class="is-word">Done</b>' : n === 0 ? '<b class="is-word">Today</b>' : `<b>${n}</b><small>${n === 1 ? 'day' : 'days'}</small>`;
   return `
     <article class="exam ${open ? 'is-open' : ''}" style="--c:${subjectVar(e.subject)}" ${study ? `data-action="toggle-exam" data-subject="${esc(e.subject)}" aria-expanded="${Boolean(open)}"` : ''}>
@@ -1044,6 +1337,7 @@ function examCard(e, tk) {
           <span class="exam-hours"><b>${fmtH(studied)}</b> of ${fmtH(total)} h${pace ? ' · ' + pace : ''}</span>
           ${n >= 0 ? `<button class="log-btn" data-action="log-hours" data-subject="${esc(e.subject)}" data-day="${tk}">${ICON.plus}Log</button>` : ''}
         </div>
+        ${reads.length ? `<p class="exam-read">Reading <b>${readsDone}</b> of ${reads.length} done${readsLate ? ` · <span class="pace-t is-behind">${readsLate} behind</span>` : ''}</p>` : ''}
         ${open && span.length ? `
           <div class="exam-chart">
             <div class="spark" aria-hidden="true">
@@ -1107,7 +1401,7 @@ function renderTasks() {
         <h2 class="group ${label === 'Overdue' ? 'is-alert' : ''}">${label}<span>${list.length}</span></h2>
         <ul class="task-list">${list.map((t) => taskRow(t)).join('')}</ul>
       </section>`).join('') || `<p class="empty">${f === 'done' ? 'Nothing marked done yet.' : 'Nothing to do. Add a task above.'}</p>`}
-    <p class="hint">Tasks are saved to the sheet. Todoist is not changed.</p>`;
+    <p class="hint">Tasks live in the Items table of your sheet. Tasks with a time also appear in your Personal Gantt calendar.</p>`;
 }
 
 // ---------- Actions ----------
@@ -1117,7 +1411,7 @@ function setHours(item, k, value) {
   if (v === toNumber(item.cells[k])) return;
   if (v) item.cells[k] = String(v); else delete item.cells[k];
   render();
-  queue([{ range: cellRef(item, k), value: v || '' }]);
+  setFields(item, { days: item.cells });
 }
 
 async function setLogged(subject, k, value) {
@@ -1125,86 +1419,56 @@ async function setLogged(subject, k, value) {
   let row = logRowFor(subject);
   if (!row) {
     if (!v) return;
-    row = await addLogRow(subject);
+    [row] = (await addItems([{ type: 'log', area: 'Log', subject, title: 'Actual hours', calendar: 'off' }])) || [];
     if (!row) return;
   }
   if (v === toNumber(row.cells[k])) return;
   if (v) row.cells[k] = String(v); else delete row.cells[k];
   render();
-  queue([{ range: cellRef(row, k), value: v || '' }], { delay: 300 });
+  setFields(row, { days: row.cells }, { delay: 300 });
   toast(v ? `${subject}: ${fmtH(v)} h studied ${relDay(k) === 'Today' ? 'today' : 'on ' + relDay(k)}` : `Cleared ${subject} for ${relDay(k)}`);
-}
-
-// Adds a log row for a subject that has none yet, below the last one.
-async function addLogRow(subject) {
-  const logs = state.plan.logs || [];
-  if (!logs.length) { toast('The sheet has no Study log section yet.'); return null; }
-  const last = logs[logs.length - 1];
-  const row = last.row + 1;
-  await flush();
-  setSync('saving');
-  try {
-    await api.insertRowBelow(state.raw.sheetIds[CONFIG.sheets.gantt], last.row);
-    const days = state.plan.days;
-    const ups = [
-      { range: colRef('phase', row), value: last.phase || 'Log' },
-      { range: colRef('subject', row), value: subject },
-      { range: colRef('task', row), value: last.task || 'Actual hours' },
-    ];
-    if (state.plan.header.hours >= 0 && days.length) ups.push({ range: colRef('hours', row), value: `=SUM(${colLetter(days[0].col)}${row}:${colLetter(days.at(-1).col)}${row})` });
-    await api.writeCells(ups);
-    setSync('saved');
-  } catch (e) {
-    if (e instanceof api.AuthError) { renderSignIn('Your session ended. Sign in and log the time again.'); return null; }
-    setSync('error');
-    toast(`Not saved. ${e.message}`);
-    return null;
-  }
-  await refresh();
-  return logRowFor(subject);
 }
 
 function setTaskStatus(item, next, { announce = true } = {}) {
   const st = item.status;
   if (st.status === next) return;
-  const prev = { ...st };
-  const statusPart = next === 'done' ? `done ${shortLabel(todayKey())}` : 'open';
-  const text = composeTask({ ...st, statusPart });
-  item.status = splitTask(text);
-  item.task = text;
-  state.justToggled = next === 'done' ? item.row : null;
+  const prev = { status: st.status, doneOn: item.doneOn };
+  const doneOn = next === 'done' ? todayKey() : '';
+  item.doneOn = doneOn;
+  item.status = { ...st, status: next, doneOn: doneOn ? shortLabel(doneOn) : '' };
+  state.justToggled = next === 'done' ? item.id : null;
   render();
   state.justToggled = null;
-  queue([{ range: colRef('task', item.row), value: text }], { delay: 300 });
+  setFields(item, { status: next, done_on: doneOn }, { delay: 300 });
   if (announce) {
     toast(next === 'done' ? `Done: ${st.title}` : `Back to do: ${st.title}`, () => {
-      item.status = prev;
-      item.task = prev.raw;
+      item.doneOn = prev.doneOn;
+      item.status = { ...item.status, status: prev.status, doneOn: prev.doneOn ? shortLabel(prev.doneOn) : '' };
       render();
-      queue([{ range: colRef('task', item.row), value: prev.raw }], { delay: 0 });
+      setFields(item, { status: prev.status, done_on: prev.doneOn }, { delay: 0 });
     });
   }
 }
 
 const toggleTask = (item) => setTaskStatus(item, item.status.status === 'done' ? 'open' : 'done');
 
-// Puts a task on exactly these days: X cells for the days in the chart, and
-// Start and End set to the first and last day (both cleared for no days), so a
-// removed day can never come back from a stale Start date.
+// Puts an item on exactly these days. One day, or a run of days, is stored as
+// date and end; scattered days are listed in the days column with X marks.
 function setTaskDays(item, days, message) {
-  if (item.lockedDates) return toast('This row takes its dates from formulas in the sheet.');
-  days = [...new Set(days)].sort();
+  days = [...new Set(days)].filter(Boolean).sort();
   const before = currentDays(item);
-  const ups = [];
-  const marked = new Set(plannedDays(item));
-  for (const d of marked) if (!days.includes(d)) { ups.push({ range: cellRef(item, d), value: '' }); delete item.cells[d]; }
-  for (const d of days) if (!marked.has(d) && state.plan.dayByKey[d]) { ups.push({ range: cellRef(item, d), value: 'X' }); item.cells[d] = 'X'; }
-  const s0 = days[0] || '', s1 = days.at(-1) || '';
-  ups.push({ range: colRef('start', item.row), value: s0 }, { range: colRef('end', item.row), value: s1 });
+  const run = days.length > 1 && days.every((d, i) => i === 0 || d === addDays(days[i - 1], 1));
+  const s0 = days[0] || '';
+  const s1 = days.length > 1 ? days.at(-1) : '';
+  const cells = {};
+  // Keep any non-X values (such as hours); drop the old X marks.
+  for (const [k, v] of Object.entries(item.cells)) if (!/^x$/i.test(v)) cells[k] = v;
+  if (days.length > 1 && !run) for (const d of days) cells[d] = 'X';
+  item.cells = cells;
   item.start = s0 || null;
   item.end = s1 || null;
   render();
-  queue(ups, { delay: 200 });
+  setFields(item, { date: s0, end: s1, days: cells }, { delay: 200 });
   if (message) toast(message, () => setTaskDays(item, before));
 }
 
@@ -1212,47 +1476,13 @@ const moveTask = (item, k) => setTaskDays(item, k ? [k] : [], k ? `Moved to ${re
 const addTaskDay = (item, k) => setTaskDays(item, [...currentDays(item), k], `Also planned for ${relDay(k)}`);
 const removeTaskDay = (item, k) => setTaskDays(item, currentDays(item).filter((d) => d !== k), `Removed from ${relDay(k)}`);
 
-async function deleteTask(item) {
-  const title = item.status.title;
-  await flush();
-  setSync('saving');
-  try {
-    await api.deleteRow(state.raw.sheetIds[CONFIG.sheets.gantt], item.row);
-    setSync('saved');
-    toast(`Deleted: ${title}`);
-  } catch (e) {
-    if (e instanceof api.AuthError) return renderSignIn('Your session ended before the task was deleted. Sign in and try again.');
-    setSync('error');
-    toast(`Not deleted. ${e.message}`);
-  }
-  await refresh();
-}
+const deleteTask = (item) => removeItem(item, { message: `Deleted: ${item.title}` });
 
-async function addTask({ title, date, phase = '', subject = '', prio = '', note = '' }) {
-  const tasks = allTasks();
-  const last = tasks[tasks.length - 1];
-  if (!last) return toast('The sheet has no task section to add to.');
-  const row = last.row + 1;
-  await flush();
-  setSync('saving');
-  try {
-    await api.insertRowBelow(state.raw.sheetIds[CONFIG.sheets.gantt], last.row);
-    const ups = [
-      { range: colRef('phase', row), value: phase },
-      { range: colRef('subject', row), value: subject },
-      { range: colRef('task', row), value: composeTask({ title, prio, statusPart: 'open', note }) },
-    ];
-    if (date) ups.push({ range: colRef('start', row), value: date }, { range: colRef('end', row), value: date });
-    if (date && state.plan.dayByKey[date]) ups.push({ range: gantt(colLetter(state.plan.dayByKey[date].col) + row), value: 'X' });
-    await api.writeCells(ups);
-    setSync('saved');
-    toast(`Added for ${date ? relDay(date) : 'no date'}`);
-  } catch (e) {
-    if (e instanceof api.AuthError) return renderSignIn('Your session ended before the task was added. Sign in and add it again.');
-    setSync('error');
-    toast(`Not added. ${e.message}`);
-  }
-  await refresh();
+async function addTask({ title, date, time = '', minutes = '', phase = '', subject = '', prio = '', note = '', type = 'task' }) {
+  await addItems([{
+    type, area: phase, subject, title, date: date || '', time, minutes: time ? toNumber(minutes) || 15 : '',
+    status: 'open', priority: prio, notes: note, calendar: type === 'reading' ? 'off' : 'auto',
+  }], { message: `Added for ${date ? relDay(date) : 'no date'}${time ? ' at ' + time : ''}` });
 }
 
 // ---------- Sheets (dialogs) ----------
@@ -1447,46 +1677,34 @@ function logHours(subject, k) {
   setLogged(subject, k, 1);
 }
 
-function editText(range, label, sub, value) {
+// A note for a day: one Items row of type "note". Saving empty text deletes it.
+function editNote(item, k) {
+  const value = item?.title || '';
   openSheet(`
-    ${sheetHead(label, sub)}
-    <label class="field"><textarea name="text" rows="3" aria-label="${esc(label)}">${esc(value)}</textarea></label>
-    ${sheetActions('Save', value ? '<button class="btn btn-quiet" value="clear" formnovalidate>Clear</button>' : '')}`,
+    ${sheetHead(item ? 'Note' : 'New note', longLabel(k))}
+    <label class="field"><textarea name="text" rows="3" aria-label="Note">${esc(value)}</textarea></label>
+    ${sheetActions('Save', item ? '<button class="btn btn-quiet btn-danger" value="clear" formnovalidate>Delete</button>' : '')}`,
   (d, which) => {
-    const v = which === 'clear' ? '' : d.text.trim();
+    const v = which === 'clear' ? '' : (d.text || '').trim();
     if (v === value) return;
-    queue([{ range, value: v }], { delay: 0 });
-    patchLocal(range, v);
+    if (!item) return v && addItems([{ type: 'note', area: 'Note', title: v, date: k, calendar: 'off' }], { message: 'Note added' });
+    if (!v) return removeItem(item, { message: 'Note deleted' });
+    item.title = v; item.task = v; item.status.title = v;
+    render();
+    setFields(item, { title: v }, { delay: 0 });
   }, { onOpen: (f) => f.querySelector('textarea').focus() });
-}
-
-// Reflects a text edit on screen before the sheet confirms it.
-function patchLocal(range, v) {
-  const m = range.match(/!([A-Z]+)(\d+)$/);
-  if (!m) return;
-  const row = +m[2];
-  if (range.includes(CONFIG.sheets.dailyPlan)) {
-    for (const day of Object.values(state.daily.byKey)) {
-      if (day.row !== row) continue;
-      for (const f of ['commitments', 'studyNote', 'exercise']) if (colLetter(day[f].col) === m[1]) day[f].value = v;
-    }
-  } else {
-    const item = findItem(row);
-    if (item && colLetter(state.plan.header.task) === m[1]) item.task = v;
-  }
-  render();
 }
 
 function editCell(item, k) {
   const v = item.cells[k] || '';
-  const used = [...new Set(Object.values(item.cells).concat(['!']))].filter((x) => x && x !== v).slice(0, 4);
+  const ex = item.type === 'exercise';
+  const opts = ex ? (/weigh/i.test(item.subject) ? ['W'] : ['A', 'B', 'L']) : [...new Set(Object.values(item.cells).concat(['!']))].filter((x) => x && x !== v).slice(0, 4);
   openSheet(`
-    ${sheetHead(item.task || item.subject, longLabel(k))}
-    <p class="dlg-label">Mark this day</p>
+    ${sheetHead(item.subject || item.title, longLabel(k))}
+    <p class="dlg-label">${ex ? 'Session' : 'Mark this day'}</p>
     <div class="choice-row">
-      <button type="button" class="choice ${!v ? 'is-on' : ''}" data-set="v" data-value="">Nothing</button>
-      ${v ? `<button type="button" class="choice is-on" data-set="v" data-value="${esc(v)}">${esc(v)}</button>` : ''}
-      ${used.map((x) => `<button type="button" class="choice" data-set="v" data-value="${esc(x)}">${x === '!' ? '! Deadline' : esc(x)}</button>`).join('')}
+      <button type="button" class="choice ${!v ? 'is-on' : ''}" data-set="v" data-value="">${ex ? 'Rest' : 'Nothing'}</button>
+      ${opts.map((x) => `<button type="button" class="choice ${x === v ? 'is-on' : ''}" data-set="v" data-value="${esc(x)}">${ex ? esc(exLabel(x)) : x === '!' ? '! Deadline' : esc(x)}</button>`).join('')}
     </div>
     <label class="field field-inline"><span>Or type</span><input name="v" value="${esc(v)}" maxlength="40"></label>
     ${sheetActions()}`,
@@ -1495,21 +1713,27 @@ function editCell(item, k) {
     if (nv === v) return;
     if (nv) item.cells[k] = nv; else delete item.cells[k];
     render();
-    queue([{ range: cellRef(item, k), value: nv }], { delay: 0 });
+    setFields(item, { days: item.cells }, { delay: 0 });
   }, { onOpen: wireChoices });
 }
 
 function taskForm(t, date) {
-  const tasks = allTasks();
-  const phases = [...new Set(tasks.map((x) => x.phase).filter(Boolean))];
-  const subjects = [...new Set(tasks.map((x) => x.subject).filter(Boolean))];
+  const pool = state.plan.items.filter((x) => x.type === (t?.type || 'task'));
+  const phases = [...new Set(pool.map((x) => x.phase).filter(Boolean))];
+  const subjects = [...new Set(pool.map((x) => x.subject).filter(Boolean))];
   const st = t?.status || { title: '', prio: '', note: '' };
   const days = t ? currentDays(t) : [];
+  const isRead = t?.type === 'reading';
   return `
-    <label class="field"><span>Task</span><input name="title" value="${esc(st.title)}" required autocomplete="off"></label>
+    <label class="field"><span>${isRead ? 'Reading' : t?.type === 'event' ? 'Event' : 'Task'}</span><input name="title" value="${esc(st.title)}" required autocomplete="off"></label>
     <p class="dlg-label">When</p>
     ${days.length > 1 ? `<p class="dlg-sub">Planned on ${days.map((d) => esc(shortLabel(d))).join(', ')}. Picking a day moves it to that day only.</p>` : ''}
     ${dateChoices('date', date, { none: Boolean(t) })}
+    <div class="field-row">
+      <label class="field"><span>Time (optional)</span><input name="time" type="time" value="${esc(t?.time || '')}"></label>
+      <label class="field"><span>${isRead ? 'Hours' : 'Minutes'}</span><input name="${isRead ? 'hours' : 'minutes'}" type="number" inputmode="decimal" min="0" step="${isRead ? 0.5 : 5}" value="${esc(isRead ? (t?.hours || '') : (t?.minutes || ''))}" placeholder="${isRead ? '1' : '15'}"></label>
+    </div>
+    <p class="dlg-hint">${t?.calendar === 'off' ? 'Not synced to the calendar.' : 'With a time, it also goes in your Personal Gantt calendar.'}</p>
     <p class="dlg-label">Priority</p>
     <div class="choice-row">
       ${['', 'P1', 'P2', 'P3'].map((p) => `<button type="button" class="choice ${st.prio === p ? 'is-on' : ''}" data-set="prio" data-value="${p}">${p || 'None'}</button>`).join('')}
@@ -1519,7 +1743,7 @@ function taskForm(t, date) {
     <details class="more">
       <summary>Area and topic</summary>
       <div class="field-row">
-        <label class="field"><span>Area</span><input name="phase" list="dl-phase" value="${esc(t ? t.phase : phases[0] || '')}" autocomplete="off"></label>
+        <label class="field"><span>Area</span><input name="phase" list="dl-phase" value="${esc(t ? t.phase : '')}" autocomplete="off"></label>
         <label class="field"><span>Topic</span><input name="subject" list="dl-subject" value="${esc(t?.subject || '')}" autocomplete="off"></label>
       </div>
       <datalist id="dl-phase">${phases.map((p) => `<option value="${esc(p)}">`).join('')}</datalist>
@@ -1527,37 +1751,44 @@ function taskForm(t, date) {
     </details>`;
 }
 
+const KIND = { task: 'task', reading: 'reading', event: 'event', exam: 'exam', exercise: 'exercise block', note: 'note' };
+
 function editTask(item) {
   const st = item.status;
   const done = st.status === 'done';
   const due = taskDue(item) || '';
+  const kind = KIND[item.type] || 'item';
+  const checkable = ['task', 'reading'].includes(item.type) || !KIND[item.type];
   openSheet(`
-    ${sheetHead('Edit task', [item.phase, item.subject].filter(Boolean).join(', '))}
+    ${sheetHead('Edit ' + kind, [item.phase, item.subject].filter(Boolean).join(', '))}
+    ${checkable ? `
     <button type="button" class="done-toggle ${done ? 'is-done' : ''}" data-toggle-done aria-pressed="${done}">
       <span class="check" aria-hidden="true">${ICON.check}</span>
       <span><b>${done ? 'Done' : 'Not done yet'}</b><small>${done ? (st.doneOn ? `Finished ${esc(st.doneOn)}. Tap to reopen.` : 'Tap to reopen.') : 'Tap to mark as done.'}</small></span>
-    </button>
+    </button>` : ''}
     ${taskForm(item, due)}
-    ${sheetActions('Save', '<button class="btn btn-quiet btn-danger" value="delete" formnovalidate data-confirm>Delete</button>')}`,
+    ${sheetActions('Save', `<button class="btn btn-quiet btn-danger" value="delete" formnovalidate data-confirm>Delete</button>`)}`,
   (d, which) => {
     if (which === 'delete') return deleteTask(item);
-    const ups = [];
-    const changed = d.title.trim() !== st.title || d.prio !== st.prio || (d.note ?? st.note).trim() !== st.note;
-    if (changed) {
-      const text = composeTask({ title: d.title.trim(), prio: d.prio, statusPart: item.status.statusPart, note: (d.note ?? st.note).trim() });
-      ups.push({ range: colRef('task', item.row), value: text });
-      item.status = splitTask(text);
-      item.task = text;
-    }
-    if (d.phase !== undefined && d.phase.trim() !== item.phase) { ups.push({ range: colRef('phase', item.row), value: d.phase.trim() }); item.phase = d.phase.trim(); }
-    if (d.subject !== undefined && d.subject.trim() !== item.subject) { ups.push({ range: colRef('subject', item.row), value: d.subject.trim() }); item.subject = d.subject.trim(); }
-    if (ups.length) { render(); queue(ups, { delay: 0 }); }
+    const f = {};
+    const title = (d.title || '').trim();
+    const note = (d.note ?? st.note).trim();
+    if (title && title !== item.title) { f.title = title; item.title = title; item.task = title; }
+    if (d.prio !== undefined && d.prio !== item.status.prio) { f.priority = d.prio; }
+    if (note !== item.notes) { f.notes = note; item.notes = note; }
+    if (d.time !== undefined && (d.time || '') !== item.time) { f.time = d.time || ''; item.time = d.time || ''; }
+    if (d.minutes !== undefined && toNumber(d.minutes) !== item.minutes) { f.minutes = d.minutes ? toNumber(d.minutes) : ''; item.minutes = toNumber(d.minutes); }
+    if (d.hours !== undefined && toNumber(d.hours) !== item.hours) { f.hours = d.hours ? toNumber(d.hours) : ''; item.hours = toNumber(d.hours); }
+    if (d.phase !== undefined && d.phase.trim() !== item.phase) { f.area = d.phase.trim(); item.phase = item.area = f.area; }
+    if (d.subject !== undefined && d.subject.trim() !== item.subject) { f.subject = d.subject.trim(); item.subject = f.subject; }
+    item.status = { ...item.status, title: item.title, prio: d.prio ?? item.status.prio, note: item.notes };
+    if (Object.keys(f).length) { render(); setFields(item, f, { delay: 0 }); }
     if ((d.date || '') !== due) moveTask(item, d.date || '');
   }, {
     onOpen(form) {
       wireChoices(form);
       // Done toggles straight away; the rest waits for Save.
-      form.querySelector('[data-toggle-done]').addEventListener('click', () => closeSheet(() => toggleTask(item)));
+      form.querySelector('[data-toggle-done]')?.addEventListener('click', () => closeSheet(() => toggleTask(item)));
       const del = form.querySelector('[data-confirm]');
       del.addEventListener('click', (ev) => {
         if (del.dataset.armed) return;
@@ -1618,17 +1849,46 @@ function addTaskSheet(k) {
     ${sheetHead('New task')}
     ${taskForm(null, k)}
     ${sheetActions('Add task')}`,
-  (d) => addTask({ title: d.title.trim(), date: d.date, prio: d.prio, note: (d.note || '').trim(), phase: (d.phase || '').trim(), subject: (d.subject || '').trim() }),
+  (d) => addTask({ title: d.title.trim(), date: d.date, time: d.time || '', minutes: d.minutes, prio: d.prio, note: (d.note || '').trim(), phase: (d.phase || '').trim(), subject: (d.subject || '').trim() }),
   { onOpen(form) { wireChoices(form); form.querySelector('[name=title]').focus(); } });
 }
 
 function accountMenu() {
+  const c = state.cal;
+  const others = c.calendars.filter((x) => x.id !== c.calId);
+  const status = c.status === 'ok'
+    ? `Synced to the <b>${esc(CONFIG.calendarName)}</b> calendar${c.lastSync ? ` at ${new Date(c.lastSync).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : ''}.`
+    : c.status === 'off' ? `Calendar sync is off: ${esc(c.message)}${/not enabled/.test(c.message) ? ' Enable the Google Calendar API in the Google Cloud project that holds this app, then reload.' : /not granted/.test(c.message) ? ' Sign out and sign in again, and allow calendar access.' : ''}`
+    : c.status === 'error' ? `Calendar sync failed: ${esc(c.message)}` : 'Connecting to Google Calendar.';
   openSheet(`
     ${sheetHead('Account')}
-    <p class="dlg-sub">Signed in to Google for this session. The app reads and writes the sheet directly and stores none of its data.</p>
+    <p class="dlg-sub">Signed in to Google for this session. The app reads and writes the Items table of your sheet directly and stores none of its data.</p>
+    <p class="dlg-label">Google Calendar</p>
+    <p class="dlg-sub">${status}</p>
+    ${others.length ? `
+      <p class="dlg-label">Show on the Day view and Timeline</p>
+      <div class="cal-list">${others.map((x) => `
+        <label class="cal-opt" style="--c:${esc(x.color || 'var(--ink-3)')}"><input type="checkbox" name="cal" value="${esc(x.id)}" ${isShown(x) ? 'checked' : ''}><span class="cal-dot"></span>${esc(x.name)}</label>`).join('')}
+      </div>` : ''}
     <p><a href="https://docs.google.com/spreadsheets/d/${encodeURIComponent(CONFIG.spreadsheetId)}/edit" target="_blank" rel="noopener">Open the sheet in Google Sheets</a></p>
-    <div class="dlg-actions"><button class="btn btn-quiet" value="signout">Sign out</button></div>`,
-  (d, which) => { if (which === 'signout') signOut(); });
+    <div class="dlg-actions">
+      <button class="btn btn-quiet" value="signout" formnovalidate>Sign out</button><span class="spacer"></span>
+      <button class="btn btn-quiet" value="sync" formnovalidate>Sync now</button>
+      <button class="btn btn-primary" value="save">Done</button>
+    </div>`,
+  (d, which) => {
+    if (which === 'signout') return signOut();
+    if (which === 'sync') { state.cal.status = state.cal.status === 'off' ? 'idle' : state.cal.status; syncCalendar({ force: true }).then(() => loadCalendarEvents({ force: true })); return; }
+  }, {
+    onOpen(form) {
+      form.addEventListener('change', (ev) => {
+        if (ev.target.name !== 'cal') return;
+        const ids = [...form.querySelectorAll('input[name=cal]:checked')].map((x) => x.value);
+        store.set('pg.calShown', JSON.stringify(ids));
+        loadCalendarEvents({ force: true });
+      });
+    },
+  });
 }
 
 // ---------- Toast ----------
@@ -1651,7 +1911,7 @@ document.addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-action]');
   if (!el || el.disabled) return;
   const a = el.dataset.action;
-  const item = el.dataset.row ? findItem(el.dataset.row) : null;
+  const item = el.dataset.id ? findItem(el.dataset.id) : null;
   switch (a) {
     case 'sign-in': return signIn(store.get('pg.signedIn') === '1');
     case 'refresh': return flush().then(() => { checkForUpdate(); return refresh(); });
@@ -1670,7 +1930,7 @@ document.addEventListener('click', (ev) => {
     case 'task-day': return item && taskDaySheet(item, el.dataset.day);
     case 'log-hours': return logHours(el.dataset.subject, el.dataset.day);
     case 'edit-cell': return item && editCell(item, el.dataset.day);
-    case 'edit-text': return editText(el.dataset.range, el.dataset.label, el.dataset.sub, el.dataset.value);
+    case 'edit-note': return editNote(item, el.dataset.day);
     case 'add-task': return addTaskSheet(el.dataset.day);
     case 'task-filter': state.taskFilter = el.dataset.filter; return render();
     case 'toggle-done': state.showDone = !state.showDone; return render();
@@ -1715,7 +1975,7 @@ document.addEventListener('submit', (ev) => {
   const title = (d.task || '').trim();
   if (!title) return;
   const date = d.when === 'pick' ? d.date : d.when;
-  const phase = [...new Set(allTasks().map((t) => t.phase).filter(Boolean))][0] || '';
+  const phase = '';
   addTask({ title, date, phase });
   form.reset();
 });

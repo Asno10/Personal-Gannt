@@ -4,17 +4,21 @@
 import { CONFIG } from '../config.js';
 
 const API = 'https://sheets.googleapis.com/v4/spreadsheets/';
-const SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+export const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+export const CAL_SCOPE = 'https://www.googleapis.com/auth/calendar';
 
 let token = null;
 let tokenExpiry = 0;
 let tokenClient = null;
 let pending = null;
+let calendarGranted = false;
 
 export class AuthError extends Error {}
 
 export const configured = () => Boolean(CONFIG.clientId && CONFIG.spreadsheetId);
 export const hasToken = () => Boolean(token) && Date.now() < tokenExpiry;
+export const accessToken = () => (hasToken() ? token : null);
+export const hasCalendarScope = () => calendarGranted;
 
 function waitForGis() {
   return new Promise((resolve, reject) => {
@@ -33,12 +37,16 @@ export async function signIn({ silent = false } = {}) {
   if (!tokenClient) {
     tokenClient = window.google.accounts.oauth2.initTokenClient({
       client_id: CONFIG.clientId,
-      scope: SCOPE,
+      scope: `${SHEETS_SCOPE} ${CAL_SCOPE}`,
+      include_granted_scopes: true,
       callback: (resp) => {
         const p = pending;
         pending = null;
         if (!p) return;
         if (resp.error) return p.reject(new AuthError(resp.error_description || resp.error));
+        const oa = window.google.accounts.oauth2;
+        if (!oa.hasGrantedAllScopes(resp, SHEETS_SCOPE)) return p.reject(new AuthError('Access to Google Sheets was not granted. Sign in again and allow it.'));
+        calendarGranted = oa.hasGrantedAllScopes(resp, CAL_SCOPE);
         token = resp.access_token;
         tokenExpiry = Date.now() + (Number(resp.expires_in) - 60) * 1000;
         p.resolve();
@@ -60,6 +68,7 @@ export function signOut() {
   if (token && window.google?.accounts?.oauth2) window.google.accounts.oauth2.revoke(token, () => {});
   token = null;
   tokenExpiry = 0;
+  calendarGranted = false;
 }
 
 async function call(path, options = {}) {
@@ -88,51 +97,49 @@ const q = (name) => `'${name.replace(/'/g, "''")}'`;
 export const a1 = (sheet, cell) => `${q(sheet)}!${cell}`;
 
 export async function loadAll() {
-  const { gantt, dailyPlan } = CONFIG.sheets;
-  // A bare sheet name returns that sheet's whole used range.
-  const ranges = [q(gantt), q(dailyPlan)];
-  const qs = (render) => ranges.map((r) => 'ranges=' + encodeURIComponent(r)).join('&') + `&valueRenderOption=${render}&majorDimension=ROWS`;
-  const [meta, shown, formulas] = await Promise.all([
+  const { items, settings } = CONFIG.sheets;
+  const ranges = [q(items), q(settings)];
+  const qs = ranges.map((r) => 'ranges=' + encodeURIComponent(r)).join('&') + '&valueRenderOption=FORMATTED_VALUE&majorDimension=ROWS';
+  const [meta, shown] = await Promise.all([
     call('?fields=properties.title,sheets.properties(sheetId,title)'),
-    call('/values:batchGet?' + qs('FORMATTED_VALUE')),
-    call('/values:batchGet?' + qs('FORMULA')),
+    call('/values:batchGet?' + qs),
   ]);
   const ids = Object.fromEntries(meta.sheets.map((s) => [s.properties.title, s.properties.sheetId]));
+  if (ids[items] === undefined) throw new Error(`The sheet has no "${items}" tab.`);
   return {
     title: meta.properties.title,
     sheetIds: ids,
-    gantt: shown.valueRanges[0].values || [],
-    ganttFormulas: formulas.valueRanges[0].values || [],
-    daily: shown.valueRanges[1].values || [],
-    dailyFormulas: formulas.valueRanges[1].values || [],
+    items: shown.valueRanges[0].values || [],
+    settings: shown.valueRanges[1].values || [],
   };
 }
 
-// updates: [{ range: "'Gantt'!J5", value: 2.5 }]
+// The id column as it is now, so writes land on the right rows even if rows
+// were added or removed since the last load (by Claude, another device, or by hand).
+export async function readIdColumn(col) {
+  const r = await call('/values/' + encodeURIComponent(a1(CONFIG.sheets.items, `${col}:${col}`)) + '?majorDimension=COLUMNS');
+  const list = (r.values && r.values[0]) || [];
+  const map = new Map();
+  list.forEach((v, i) => { if (i > 0 && v) map.set(String(v).trim(), i + 1); });
+  return { map, length: list.length };
+}
+
+// updates: [{ range: "'Items'!J5", value: 2.5 }]
 export function writeCells(updates) {
   return call('/values:batchUpdate', {
     method: 'POST',
     body: JSON.stringify({
-      valueInputOption: 'USER_ENTERED',
+      valueInputOption: 'RAW',
       data: updates.map((u) => ({ range: u.range, values: [[u.value]] })),
     }),
   });
 }
 
-// Inserts an empty row below `afterRow` (1-based) that inherits its formatting.
-export function insertRowBelow(sheetId, afterRow) {
-  return call(':batchUpdate', {
+// Writes whole rows below the last used row of the Items tab.
+export function appendRows(rows) {
+  return call('/values/' + encodeURIComponent(a1(CONFIG.sheets.items, 'A1')) + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', {
     method: 'POST',
-    body: JSON.stringify({
-      requests: [
-        {
-          insertDimension: {
-            range: { sheetId, dimension: 'ROWS', startIndex: afterRow, endIndex: afterRow + 1 },
-            inheritFromBefore: true,
-          },
-        },
-      ],
-    }),
+    body: JSON.stringify({ majorDimension: 'ROWS', values: rows }),
   });
 }
 

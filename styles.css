@@ -849,3 +849,25 @@ dialog.is-settling { transition: transform 0.5s var(--spring); }
 }
 :root[data-theme="dark"] .spark-plan, :root[data-theme="dark"] .k-plan { background: color-mix(in srgb, var(--c) 45%, transparent); }
 :root[data-theme="dark"] .exam-key { --c: var(--ink); }
+
+/* ---------- Items table and calendar (build 12) ---------- */
+button.event { width: 100%; text-align: left; }
+.event { grid-template-columns: 74px 1fr; column-gap: 10px; align-items: baseline; }
+.event > span:last-child { display: grid; gap: 1px; min-width: 0; overflow-wrap: anywhere; }
+.event.is-cal .event-kind { color: var(--c, var(--ink-3)); }
+.event-cal { font-size: 0.76rem; color: var(--ink-3); font-weight: 500; }
+.note.is-quiet { color: var(--ink-3); }
+.task.is-reading .check { border-color: color-mix(in srgb, var(--c) 70%, var(--ink-3)); }
+.task.is-reading.is-done .check { background: var(--c); border-color: var(--c); }
+.tl-dot-sub { background: var(--c, var(--ink)); }
+.tl-reading .tl-label { font-size: 0.8rem; }
+.tl-calmark { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; background: color-mix(in srgb, var(--c, var(--ink-3)) 18%, transparent); color: var(--c, var(--ink-2)); font: 600 0.64rem/1 var(--font); }
+.lg-cal { font-style: normal; }
+.exam-read { margin: 6px 0 0; font-size: 0.9rem; color: var(--ink-2); }
+.exam-read b { color: var(--ink); }
+.dlg-hint { margin: 2px 0 6px; font-size: 0.82rem; color: var(--ink-3); }
+.cal-list { display: grid; gap: 2px; margin: 4px 0 10px; }
+.cal-opt { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 0.98rem; border-bottom: var(--hair, 1px) solid var(--rule); }
+.cal-opt input { width: 20px; height: 20px; accent-color: var(--s0); margin: 0; }
+.cal-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c); flex: none; }
+.field input[type=time] { min-height: 44px; }
