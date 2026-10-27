@@ -967,3 +967,18 @@ html { background: var(--paper); }
 @media (min-width: 760px) {
   .tabs { left: 0; right: 0; margin: 0 auto; width: max-content; transform: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
 }
+
+/* ---------- Top-edge colour for iPadOS (build 16) ----------
+   In a home-screen web app, iPadOS 26 blurs the top of the page under the
+   status bar unless the element at the top centre of the screen is a fixed
+   one spanning at least 90% of the width and taller than 10px; then it uses
+   that element's background colour instead. The narrow tab strip sat at that
+   point, so the system kept blurring the bar. This band gives it the page
+   colour and paints nothing itself (its background is clipped to its text,
+   and it has none). */
+.edge-band {
+  position: fixed; top: 0; left: 0; width: 100%; height: 12px;
+  z-index: 2147483647; pointer-events: none;
+  background-color: var(--paper);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
