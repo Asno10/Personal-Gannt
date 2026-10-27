@@ -8,8 +8,8 @@
 
 // The ?v= must match the one app.js uses, or the browser loads a second copy
 // of sheets.js that has no sign-in token.
-import { accessToken, hasCalendarScope } from './sheets.js?v=12';
-import { addDays } from './parse.js?v=12';
+import { accessToken, hasCalendarScope } from './sheets.js?v=13';
+import { addDays } from './parse.js?v=13';
 
 const API = 'https://www.googleapis.com/calendar/v3';
 

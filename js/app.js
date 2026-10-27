@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=12';
-import * as cal from './calendar.js?v=12';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=12';
+import * as api from './sheets.js?v=13';
+import * as cal from './calendar.js?v=13';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=13';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -56,7 +56,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '12';
+const BUILD = '13';
 
 async function checkForUpdate() {
   try {
@@ -467,6 +467,49 @@ function ensureShell() {
   return true;
 }
 
+// Only the page on screen is drawn straight away. The others are marked and
+// drawn a moment later, one at a time and never while a page is being swiped,
+// so a change on the Day page does not also rebuild the large Timeline table.
+const dirty = new Set();
+let idleTimer = 0;
+let pagerMovedAt = 0;
+
+function renderPage(v) {
+  dirty.delete(v);
+  if (v === 'today') return renderDayPage();
+  if (v === 'timeline') return renderTimelinePage();
+  if (v === 'exams') $('#view-exams').innerHTML = renderExams();
+  if (v === 'tasks') $('#view-tasks').innerHTML = renderTasks();
+}
+
+// The Timeline is replaced only when its contents actually change.
+function renderTimelinePage() {
+  const view = $('#view-timeline');
+  const html = renderTimeline();
+  if (view._html === html) return;
+  const tlLeft = $('#tl-scroll')?.scrollLeft;
+  view.innerHTML = html;
+  view._html = html;
+  const sc = $('#tl-scroll');
+  if (!sc) return;
+  bindTimelineScroll(sc);
+  if (tlLeft != null) sc.scrollLeft = tlLeft;
+  else scrollTimelineToToday(false);
+  syncTimelineHead();
+}
+
+function renderLater() {
+  clearTimeout(idleTimer);
+  const next = () => {
+    const v = VIEWS.map(([x]) => x).find((x) => dirty.has(x));
+    if (!v) return;
+    if (Date.now() - pagerMovedAt < 250 || $('#dialog')?.open) { idleTimer = setTimeout(next, 250); return; }
+    renderPage(v);
+    idleTimer = setTimeout(next, 40);
+  };
+  idleTimer = setTimeout(next, 300);
+}
+
 function render() {
   if (!state.plan) return;
   if ($('#dialog')?.open) { state.dirty = true; return; }
@@ -475,25 +518,12 @@ function render() {
   const bar = $('.bar');
   document.documentElement.style.setProperty('--bar-h', bar.offsetHeight + 'px');
 
-  const tlLeft = $('#tl-scroll')?.scrollLeft;
-  renderDayPage();
-  $('#view-timeline').innerHTML = renderTimeline();
-  $('#view-exams').innerHTML = renderExams();
-  $('#view-tasks').innerHTML = renderTasks();
+  for (const [v] of VIEWS) dirty.add(v);
+  renderPage(state.view);
   renderStatus();
   updateTabs();
-
-  const sc = $('#tl-scroll');
-  if (sc) {
-    bindTimelineScroll(sc);
-    if (tlLeft != null) sc.scrollLeft = tlLeft;
-    else scrollTimelineToToday(false);
-    syncTimelineHead();
-  }
-  if (fresh) {
-    goToPage(state.view, false);
-    centerStrip(true);
-  }
+  if (fresh) goToPage(state.view, false);
+  renderLater();
 }
 
 // ---------- Pager ----------
@@ -516,6 +546,7 @@ function setView(v) {
   if (state.view === v) return;
   state.view = v;
   store.set('pg.view', v);
+  if (dirty.has(v)) renderPage(v);
   updateTabs();
 }
 
@@ -540,6 +571,7 @@ function goToPage(v, smooth) {
 function bindPager(p) {
   p.addEventListener('touchstart', () => { pagerTarget = null; }, { passive: true });
   p.addEventListener('scroll', () => {
+    pagerMovedAt = Date.now();
     const w = p.clientWidth || 1;
     if (pagerTarget != null) {
       // A tab tap slides past the pages in between; keep the tapped tab lit.
@@ -684,6 +716,7 @@ function renderDayPage() {
   // and keeps its scroll position, so the days do not jump.
   const wrap = $('#strip-wrap');
   const html = renderStrip();
+  const firstStrip = !$('#strip');
   if (wrap.dataset.sig !== html) {
     const left = $('#strip')?.scrollLeft;
     wrap.innerHTML = html;
@@ -694,6 +727,7 @@ function renderDayPage() {
   }
   updateDayHead();
   $('#day-body').innerHTML = renderToday();
+  if (firstStrip) centerStrip(true);
 }
 
 function updateDayHead() {
@@ -983,202 +1017,202 @@ function taskRow(t, { hideDate = false, reading = false } = {}) {
 // Exams sit on their subject's row, and empty days are left blank.
 
 
-function exerciseAbbr(text) {
-  const t = String(text || '');
-  if (!t) return '';
-  const parts = [];
-  const day = t.match(/day\s*([ab])\b/i);
-  if (day) parts.push(day[1].toUpperCase());
-  if (/light/i.test(t)) parts.push('Light');
-  if (/weigh/i.test(t)) parts.push('W');
-  return parts.join(' ') || t.slice(0, 5);
-}
-
+// The Timeline is drawn without a table. The names sit in their own column,
+// which never scrolls sideways, and the grid beside it scrolls on its own.
+// Day lines, weekends and today are a few full-height stripes behind the rows,
+// and each row holds only the days that have something on them, placed by
+// position. A tap anywhere on a row is turned into the day under the finger.
+// This keeps the page to a few hundred elements instead of several thousand,
+// so it scrolls smoothly on an iPad.
 function renderTimeline() {
   const days = state.plan.days;
+  const n = days.length;
   const tk = todayKey();
-  const colCls = (k) => {
-    const dt = dateOfKey(k);
-    return [k === tk ? 'is-today' : '', dt.getDay() % 6 === 0 ? 'is-weekend' : '', dt.getDay() === 1 ? 'is-monday' : ''].join(' ');
-  };
+  const idx = Object.fromEntries(days.map((d, i) => [d.key, i]));
   const maxH = Math.max(1, ...state.plan.study.flatMap((s) => Object.values(s.cells).map(toNumber)));
+  const at = (k, inner, cls = '', w = 1) => (idx[k] == null || !inner ? '' : `<span class="gc ${cls}" style="--i:${idx[k]}${w > 1 ? `;--w:${w}` : ''}">${inner}</span>`);
 
-  const head = `
-    <tr class="tl-head">
-      <th class="tl-name" scope="col"><button class="tl-today-btn" data-action="tl-today">${ICON.target}Today</button></th>
-      ${days.map((d, i) => {
-        const dt = dateOfKey(d.key);
-        const h = studyHoursOn(d.key);
-        const month = i === 0 || dt.getDate() === 1;
-        return `<th scope="col" class="tl-day ${colCls(d.key)} ${month ? 'is-month' : ''}">
-          <button data-action="open-day" data-day="${d.key}" aria-label="Open ${esc(longLabel(d.key))}">
-            <span class="tl-month">${month ? MON[dt.getMonth()] : ''}</span>
-            <span class="tl-dow">${esc(dowLabel(d.key).slice(0, 2))}</span>
-            <span class="tl-num">${dt.getDate()}</span>
-            <span class="tl-sum">${h ? fmtH(h) + 'h' : ''}</span>
-          </button></th>`;
-      }).join('')}
-    </tr>`;
+  // Dates along the top.
+  const dates = days.map((d, i) => {
+    const dt = dateOfKey(d.key);
+    const h = studyHoursOn(d.key);
+    const month = i === 0 || dt.getDate() === 1;
+    return `<button class="tl-day ${d.key === tk ? 'is-today' : ''} ${dt.getDay() === 0 ? 'is-sunday' : ''}" data-action="open-day" data-day="${d.key}" aria-label="Open ${esc(longLabel(d.key))}">
+      <span class="tl-month">${month ? MON[dt.getMonth()] : ''}</span>
+      <span class="tl-dow">${esc(dowLabel(d.key).slice(0, 2))}</span>
+      <span class="tl-num">${dt.getDate()}</span>
+      <span class="tl-sum">${h ? fmtH(h) + 'h' : ''}</span>
+    </button>`;
+  }).join('');
 
-  // Section title rows keep one cell per day, so today and weekend shading runs
-  // unbroken down the chart. A closed section shows a summary in those cells.
-  const section = (id, name, meta, rows, preview) => {
-    if (!rows.length) return '';
-    const shut = state.collapsed.has(id);
-    return `
-      <tr class="tl-section ${shut ? 'is-shut' : ''}">
-        <th class="tl-name" scope="rowgroup">
-          <button data-action="toggle-section" data-key="${id}" aria-expanded="${!shut}">${ICON[shut ? 'right' : 'down']}<span>${esc(name)}</span><span class="tl-count">${esc(meta)}</span></button>
-        </th>
-        ${days.map((d) => `<td class="${colCls(d.key)}">${shut && preview ? preview(d.key) : ''}</td>`).join('')}
-      </tr>
-      ${shut ? '' : (state.justOpened === id ? rows.map((r) => r.replace('<tr class="', '<tr class="is-entering ')) : rows).join('')}`;
+  // Stripes behind the grid: weekends, the end of each week, and today.
+  const stripes = days.map((d, i) => {
+    const wd = dateOfKey(d.key).getDay();
+    let out = '';
+    if (wd === 6 || (wd === 0 && i === 0)) out += `<i class="tlx-col is-weekend" style="--i:${i};--w:${wd === 6 && i < n - 1 ? 2 : 1}"></i>`;
+    if (d.key === tk) out += `<i class="tlx-col is-today" style="--i:${i}"></i>`;
+    return out;
+  }).join('');
+
+  const names = [];
+  const rows = [];
+  // kind: row (48px), tall (60px, two-line names), sec (44px) or more (40px), the same in both columns.
+  const add = ({ kind = 'row', cls = '', color = '', name, cell = '' }) => {
+    const st = color ? ` style="--c:${color}"` : '';
+    names.push(`<div class="tn tk-${kind} ${cls}"${st}>${name}</div>`);
+    rows.push(`<div class="gr tk-${kind} ${cls}"${st}${cell}</div>`);
   };
-  const blankCells = () => days.map((d) => `<td class="${colCls(d.key)}"></td>`).join('');
+  const nameHtml = ({ name, sub = '', action = '' }) => `${action ? `<button ${action}>` : '<div class="tl-name-in">'}<span class="tl-label">${esc(name)}</span>${sub ? `<span class="tl-sub">${esc(sub)}</span>` : ''}${action ? '</button>' : '</div>'}`;
+  // cell: what a tap on an empty day does, then the filled days.
+  const grid = (action, id, inner) => `${action ? ` data-action="grid-cell" data-cell="${action}"${id ? ` data-id="${id}"` : ''}` : ''}>${inner}`;
 
-  const line = ({ cls = '', color = '', name, sub = '', action = '', cells }) => `
-    <tr class="tl-row ${cls}" ${color ? `style="--c:${color}"` : ''}>
-      <th class="tl-name" scope="row">${action ? `<button ${action}>` : '<div class="tl-name-in">'}<span class="tl-label">${esc(name)}</span>${sub ? `<span class="tl-sub">${esc(sub)}</span>` : ''}${action ? '</button>' : '</div>'}</th>
-      ${cells}
-    </tr>`;
+  const section = (id, title, meta, list, preview) => {
+    if (!list.length) return;
+    const shut = state.collapsed.has(id);
+    const entering = state.justOpened === id ? 'is-entering' : '';
+    add({
+      kind: 'sec', cls: `tl-section ${shut ? 'is-shut' : ''}`,
+      name: `<button data-action="toggle-section" data-key="${id}" aria-expanded="${!shut}">${ICON[shut ? 'right' : 'down']}<span>${esc(title)}</span><span class="tl-count">${esc(meta)}</span></button>`,
+      cell: grid(shut ? 'open-day' : '', '', shut && preview ? days.map((d) => at(d.key, preview(d.key))).join('') : ''),
+    });
+    if (!shut) for (const r of list) add({ ...r, cls: `${r.cls || ''} ${entering}` });
+  };
 
   // Study: one row per subject, with its exam at the end of the row.
   const study = state.plan.study.map((s) => {
     const exam = state.plan.exams.find((e) => e.subject === s.subject);
     const keys = Object.keys(s.cells).filter((k) => toNumber(s.cells[k]) > 0).sort();
     const runEnd = [exam?.start, keys.at(-1)].filter(Boolean).sort().at(-1);
-    const total = keys.reduce((n, k) => n + toNumber(s.cells[k]), 0);
-    const cells = days.map((d) => {
-      const k = d.key;
+    const total = keys.reduce((m, k) => m + toNumber(s.cells[k]), 0);
+    let inner = '';
+    const shown = new Set([...keys, ...(exam?.start ? [exam.start] : []), ...Object.keys(logRowFor(s.subject)?.cells || {})]);
+    // A thin line through the empty days between the first study day and the exam.
+    if (keys[0] && runEnd && idx[keys[0]] != null && idx[runEnd] != null) {
+      for (let i = idx[keys[0]] + 1, j; i < idx[runEnd]; i = j) {
+        j = i + 1;
+        if (shown.has(days[i].key)) continue;
+        while (j < idx[runEnd] && !shown.has(days[j].key)) j++;
+        inner += `<i class="gc-run" style="--i:${i};--w:${j - i}"></i>`;
+      }
+    }
+    for (const k of shown) {
       const h = toNumber(s.cells[k]);
-      const isExam = exam?.start === k;
-      const run = keys[0] && k > keys[0] && k < runEnd;
       const lg = k <= tk ? loggedOn(s.subject, k) : 0;
+      const isExam = exam?.start === k;
       const badge = lg ? `<span class="tl-log ${lg >= h ? 'is-good' : ''}">${fmtH(lg)}</span>` : '';
-      const inner = isExam
+      const body = isExam
         ? `<span class="tl-exam-pill">Exam${exam.time ? `<small>${esc(exam.time)}</small>` : ''}</span>`
         : h ? `<span class="tl-h" style="--a:${Math.round(18 + 40 * (h / maxH))}%">${fmtH(h)}</span>` : '';
-      return `<td class="${colCls(k)} ${run && !h && !isExam ? 'is-run' : ''}"><button class="tl-cell" data-action="edit-hours" data-id="${s.id}" data-day="${k}" aria-label="${esc(s.subject)}, ${esc(longLabel(k))}: ${isExam ? 'exam, ' : ''}${h ? fmtH(h) + ' hours planned' : 'no study planned'}${lg ? `, ${fmtH(lg)} studied` : ''}">${inner}${badge}</button></td>`;
-    }).join('');
-    return line({ cls: 'tl-study', color: subjectVar(s.subject), name: s.subject, sub: `${fmtH(total)} h${exam ? `, exam ${shortLabel(exam.start)}` : ''}`, cells });
+      inner += at(k, body + badge, 'is-solid');
+    }
+    return { cls: 'tl-study', color: subjectVar(s.subject), name: nameHtml({ name: s.subject, sub: `${fmtH(total)} h${exam ? `, exam ${shortLabel(exam.start)}` : ''}` }), cell: grid('edit-hours', s.id, inner) };
   });
-  const lonelyExams = state.plan.exams.filter((e) => !state.plan.study.some((s) => s.subject === e.subject)).map((e) => line({
-    cls: 'tl-study', color: subjectVar(e.subject), name: e.subject, sub: `Exam ${shortLabel(e.start)}`,
-    cells: days.map((d) => `<td class="${colCls(d.key)}">${e.start === d.key ? '<span class="tl-exam-pill">Exam</span>' : ''}</td>`).join(''),
+  const lonelyExams = state.plan.exams.filter((e) => !state.plan.study.some((s) => s.subject === e.subject)).map((e) => ({
+    cls: 'tl-study', color: subjectVar(e.subject), name: nameHtml({ name: e.subject, sub: `Exam ${shortLabel(e.start)}`, action: `data-action="edit-task" data-id="${e.id}"` }),
+    cell: grid('open-day', '', at(e.start, '<span class="tl-exam-pill">Exam</span>', 'is-solid')),
   }));
+
+  // A task or reading: a dot on each planned day, a tick once done.
+  const dots = (t, dotCls = '') => {
+    const isDone = t.status.status === 'done';
+    const pd = plannedDays(t);
+    return (pd.length ? pd : t.start ? [t.start] : []).map((k) => at(k, isDone ? `<span class="tl-done">${ICON.check}</span>` : `<span class="tl-dot ${dotCls}"></span>`)).join('');
+  };
 
   // Tasks: open ones first by date; done ones only when asked for.
   const all = allTasks();
   const open = all.filter((t) => t.status.status === 'open').sort((a, b) => (taskDue(a) || '9').localeCompare(taskDue(b) || '9'));
   const done = all.filter((t) => t.status.status === 'done');
-  const taskLine = (t) => {
+  const taskRow = (t) => {
     const isDone = t.status.status === 'done';
-    const pd = plannedDays(t);
-    const cells = days.map((d) => {
-      const on = pd.length ? pd.includes(d.key) : t.start === d.key;
-      const inner = on ? (isDone ? `<span class="tl-done">${ICON.check}</span>` : '<span class="tl-dot"></span>') : '';
-      return `<td class="${colCls(d.key)}"><button class="tl-cell" data-action="task-day" data-id="${t.id}" data-day="${d.key}" aria-label="${esc(t.status.title)}, ${esc(longLabel(d.key))}: ${on ? 'planned' : 'not planned'}">${inner}</button></td>`;
-    }).join('');
     const late = isOverdue(t);
-    return line({
-      cls: `tl-tasks ${isDone ? 'is-done' : ''} ${late ? 'is-late' : ''}`,
-      name: t.status.title,
-      sub: isDone ? 'Done' : late ? `${plural(daysBetween(taskDue(t), tk), 'day')} late` : [t.phase, t.subject].filter(Boolean).join(', '),
-      action: `data-action="edit-task" data-id="${t.id}"`, cells,
-    });
+    return {
+      kind: 'tall', cls: `tl-tasks ${isDone ? 'is-done' : ''} ${late ? 'is-late' : ''}`,
+      name: nameHtml({ name: t.status.title, sub: isDone ? 'Done' : late ? `${plural(daysBetween(taskDue(t), tk), 'day')} late` : [t.time, t.phase, t.subject].filter(Boolean).join(', '), action: `data-action="edit-task" data-id="${t.id}"` }),
+      cell: grid('task-day', t.id, dots(t)),
+    };
   };
-  const taskRows = open.map(taskLine);
+  const taskRows = open.map(taskRow);
   if (done.length) {
-    taskRows.push(`
-      <tr class="tl-more"><th class="tl-name" scope="row"><button data-action="toggle-done-tl">${state.tlShowDone ? 'Hide' : 'Show'} done (${done.length})</button></th>${blankCells()}</tr>`);
-    if (state.tlShowDone) taskRows.push(...done.map(taskLine));
+    taskRows.push({ kind: 'more', cls: 'tl-more', name: `<button data-action="toggle-done-tl">${state.tlShowDone ? 'Hide' : 'Show'} done (${done.length})</button>`, cell: grid('', '', '') });
+    if (state.tlShowDone) taskRows.push(...done.map(taskRow));
   }
 
-  // Reading plans: one row per reading, a dot on its day, by subject colour.
+  // Reading plans: one row per reading, by subject and date.
   const readRows = readings().slice().sort((x, y) => (x.subject + (x.start || '9')).localeCompare(y.subject + (y.start || '9'))).map((r) => {
     const isDone = r.status.status === 'done';
     const late = isOverdue(r);
-    return line({
-      cls: `tl-tasks tl-reading ${isDone ? 'is-done' : ''} ${late ? 'is-late' : ''}`, color: subjectVar(r.subject),
-      name: r.title, sub: [r.subject, r.hours ? fmtH(r.hours) + ' h' : '', isDone ? 'done' : late ? 'not read yet' : ''].filter(Boolean).join(', '),
-      action: `data-action="edit-task" data-id="${r.id}"`,
-      cells: days.map((d) => {
-        const on = r.start === d.key;
-        const inner = on ? (isDone ? `<span class="tl-done">${ICON.check}</span>` : '<span class="tl-dot tl-dot-sub"></span>') : '';
-        return `<td class="${colCls(d.key)}"><button class="tl-cell" data-action="task-day" data-id="${r.id}" data-day="${d.key}" aria-label="${esc(r.title)}, ${esc(longLabel(d.key))}: ${on ? 'planned' : 'not planned'}">${inner}</button></td>`;
-      }).join(''),
-    });
+    return {
+      kind: 'tall', cls: `tl-tasks tl-reading ${isDone ? 'is-done' : ''} ${late ? 'is-late' : ''}`, color: subjectVar(r.subject),
+      name: nameHtml({ name: r.title, sub: [r.subject, r.hours ? fmtH(r.hours) + ' h' : '', isDone ? 'done' : late ? 'not read yet' : ''].filter(Boolean).join(', '), action: `data-action="edit-task" data-id="${r.id}"` }),
+      cell: grid('task-day', r.id, dots(r, 'tl-dot-sub')),
+    };
   });
 
-  // Deadlines and events kept in the sheet.
+  // Deadlines and events kept in the sheet: a bar over the days they cover.
   const eventRows = ofType('event').map((e) => {
     const alert = /deadline/i.test(e.subject);
-    return line({
-      cls: `tl-events ${alert ? 'is-alert' : ''}`, name: e.title, sub: [e.subject, e.time].filter(Boolean).join(', '),
-      action: `data-action="edit-task" data-id="${e.id}"`,
-      cells: days.map((d) => `<td class="${colCls(d.key)}">${coversDay(e, d.key) ? `<span class="tl-bar ${alert ? 'is-alert' : ''}"></span>` : ''}</td>`).join(''),
-    });
+    const s0 = e.start;
+    const s1 = e.end || e.start;
+    const span = s0 && idx[s0] != null ? Math.max(1, (idx[s1] ?? idx[s0]) - idx[s0] + 1) : 1;
+    const marks = Object.keys(e.cells).map((k) => at(k, `<span class="tl-bar ${alert ? 'is-alert' : ''}"></span>`)).join('');
+    return {
+      cls: `tl-events ${alert ? 'is-alert' : ''}`,
+      name: nameHtml({ name: e.title, sub: [e.subject, e.time].filter(Boolean).join(', '), action: `data-action="edit-task" data-id="${e.id}"` }),
+      cell: grid('open-day', '', (s0 ? at(s0, `<span class="tl-bar ${alert ? 'is-alert' : ''}"></span>`, 'is-bar', span) : '') + marks),
+    };
   });
 
   // The other Google calendars: one row each, with that day's event count.
-  const calRows = state.cal.calendars.filter(isShown).map((cl) => line({
-    cls: 'tl-commit tl-cal', color: cl.color, name: cl.name, sub: 'Google Calendar',
-    cells: days.map((d) => {
+  const calRows = state.cal.status !== 'ok' ? [] : state.cal.calendars.filter(isShown).map((cl) => ({
+    cls: 'tl-cal', color: cl.color, name: nameHtml({ name: cl.name, sub: 'Google Calendar' }),
+    cell: grid('open-day', '', days.map((d) => {
       const evs = calEventsOn(d.key).filter((e) => e.calId === cl.id);
-      const inner = evs.length ? `<span class="tl-mark tl-calmark">${evs.length > 1 ? evs.length : esc(evs[0].time || 'All')}</span>` : '';
-      return `<td class="${colCls(d.key)}">${evs.length ? `<button class="tl-cell" data-action="open-day" data-day="${d.key}" aria-label="${esc(cl.name)}, ${esc(longLabel(d.key))}: ${plural(evs.length, 'event')}">${inner}</button>` : ''}</td>`;
-    }).join(''),
-  })).filter(() => state.cal.status === 'ok');
+      return evs.length ? at(d.key, `<span class="tl-mark tl-calmark">${evs.length > 1 ? evs.length : esc(evs[0].time || 'All')}</span>`) : '';
+    }).join('')),
+  }));
 
   // Exercise: one row per programme phase and the weigh-ins.
-  const exerciseRows = ofType('exercise').map((x) => line({
-    cls: 'tl-exercise', name: x.subject || x.title, sub: x.start ? `${shortLabel(x.start)} to ${shortLabel(x.end || x.start)}` : '',
-    action: `data-action="edit-task" data-id="${x.id}"`,
-    cells: days.map((d) => {
-      const v = x.cells[d.key] || '';
-      const inPhase = x.start && x.start <= d.key && d.key <= (x.end || x.start);
-      return `<td class="${colCls(d.key)} ${inPhase && !/weigh/i.test(x.subject) ? 'is-phase' : ''}"><button class="tl-cell" data-action="edit-cell" data-id="${x.id}" data-day="${d.key}" aria-label="${esc(x.subject)}, ${esc(longLabel(d.key))}: ${esc(v ? exLabel(v) : 'nothing')}">${v ? `<span class="tl-ex">${esc(v)}</span>` : ''}</button></td>`;
-    }).join(''),
-  }));
+  const exerciseRows = ofType('exercise').map((x) => {
+    const phase = x.start && idx[x.start] != null && !/weigh/i.test(x.subject)
+      ? `<i class="gc-phase" style="--i:${idx[x.start]};--w:${(idx[x.end || x.start] ?? n - 1) - idx[x.start] + 1}"></i>` : '';
+    return {
+      cls: 'tl-exercise', name: nameHtml({ name: x.subject || x.title, sub: x.start ? `${shortLabel(x.start)} to ${shortLabel(x.end || x.start)}` : '', action: `data-action="edit-task" data-id="${x.id}"` }),
+      cell: grid('edit-cell', x.id, phase + Object.entries(x.cells).map(([k, v]) => at(k, `<span class="tl-ex">${esc(v)}</span>`)).join('')),
+    };
+  });
 
   // Anything of a type the app does not know yet, so nothing in the sheet is hidden.
-  const otherRows = [...state.plan.other, ...ofType('note')].map((o) => line({
-    cls: 'tl-tasks', name: o.title || o.subject || o.id, sub: o.type,
-    action: `data-action="edit-task" data-id="${o.id}"`,
-    cells: days.map((d) => `<td class="${colCls(d.key)}">${coversDay(o, d.key) ? '<span class="tl-dot"></span>' : ''}</td>`).join(''),
+  const otherRows = [...state.plan.other, ...ofType('note')].map((o) => ({
+    cls: 'tl-tasks', name: nameHtml({ name: o.title || o.subject || o.id, sub: o.type, action: `data-action="edit-task" data-id="${o.id}"` }),
+    cell: grid('open-day', '', days.filter((d) => coversDay(o, d.key)).map((d) => at(d.key, '<span class="tl-dot"></span>')).join('')),
   }));
 
-  // Both tables share these column widths, so the dates line up with the cells below.
-  const cols = `<colgroup><col class="tl-col-name">${days.map(() => '<col class="tl-col-day">').join('')}</colgroup>`;
-
-  const studyTotal = state.plan.study.reduce((n, s) => n + Object.values(s.cells).reduce((m, v) => m + toNumber(v), 0), 0);
+  const studyTotal = state.plan.study.reduce((m, s) => m + Object.values(s.cells).reduce((x, v) => x + toNumber(v), 0), 0);
   const readOpen = readings().filter((r) => r.status.status === 'open').length;
   // What a closed section still shows on each day.
   const preview = {
     study(k) {
       const h = studyHoursOn(k);
-      const ex = state.plan.exams.some((e) => e.start === k);
-      return ex ? '<span class="tl-exam-pill tl-mini">Exam</span>' : h ? `<span class="tl-pv-h">${fmtH(h)}</span>` : '';
+      return state.plan.exams.some((e) => e.start === k) ? '<span class="tl-exam-pill tl-mini">Exam</span>' : h ? `<span class="tl-pv-h">${fmtH(h)}</span>` : '';
     },
     tasks(k) {
       const on = tasksOn(k);
       const o = on.filter((t) => t.status.status === 'open').length;
-      if (o) return `<button class="tl-cell" data-action="open-day" data-day="${k}" aria-label="${plural(o, 'open task')} on ${esc(longLabel(k))}"><span class="tl-dot ${o > 1 ? 'is-many' : ''}">${o > 1 ? o : ''}</span></button>`;
-      return on.length ? `<span class="tl-done is-faint">${ICON.check}</span>` : '';
+      return o ? `<span class="tl-dot ${o > 1 ? 'is-many' : ''}">${o > 1 ? o : ''}</span>` : on.length ? `<span class="tl-done is-faint">${ICON.check}</span>` : '';
     },
     reading(k) {
       const on = readingsOn(k);
       const o = on.filter((t) => t.status.status === 'open').length;
-      if (o) return `<button class="tl-cell" data-action="open-day" data-day="${k}" aria-label="${plural(o, 'reading')} on ${esc(longLabel(k))}"><span class="tl-dot tl-dot-sub ${o > 1 ? 'is-many' : ''}">${o > 1 ? o : ''}</span></button>`;
-      return on.length ? `<span class="tl-done is-faint">${ICON.check}</span>` : '';
+      return o ? `<span class="tl-dot tl-dot-sub ${o > 1 ? 'is-many' : ''}">${o > 1 ? o : ''}</span>` : on.length ? `<span class="tl-done is-faint">${ICON.check}</span>` : '';
     },
     events(k) {
       const ev = ofType('event').filter((e) => coversDay(e, k));
       return ev.length ? `<span class="tl-bar ${ev.some((e) => /deadline/i.test(e.subject)) ? 'is-alert' : ''}"></span>` : '';
     },
     calendar(k) {
-      const n = calEventsOn(k).length;
-      return n ? `<button class="tl-cell" data-action="open-day" data-day="${k}" aria-label="${plural(n, 'calendar event')} on ${esc(longLabel(k))}"><span class="tl-mark tl-calmark">${n}</span></button>` : '';
+      const c = calEventsOn(k).length;
+      return c ? `<span class="tl-mark tl-calmark">${c}</span>` : '';
     },
     exercise(k) {
       const marks = exerciseOn(k).map((e) => e.cells[k]);
@@ -1189,15 +1223,13 @@ function renderTimeline() {
     },
   };
 
-  const body = [
-    section('study', 'Study', `${fmtH(studyTotal)} h`, [...study, ...lonelyExams], preview.study),
-    section('reading', 'Reading', `${readOpen} open`, readRows, preview.reading),
-    section('tasks', 'Tasks', `${open.length} open`, taskRows, preview.tasks),
-    section('events', 'Deadlines and events', plural(eventRows.length, 'item'), eventRows, preview.events),
-    section('calendar', 'Google Calendar', '', calRows, preview.calendar),
-    section('exercise', 'Exercise', '', exerciseRows, preview.exercise),
-    section('other', 'Other', plural(otherRows.length, 'item'), otherRows, preview.other),
-  ].join('');
+  section('study', 'Study', `${fmtH(studyTotal)} h`, [...study, ...lonelyExams], preview.study);
+  section('reading', 'Reading', `${readOpen}`, readRows, preview.reading);
+  section('tasks', 'Tasks', `${open.length} open`, taskRows, preview.tasks);
+  section('events', 'Deadlines and events', plural(eventRows.length, 'item'), eventRows, preview.events);
+  section('calendar', 'Google Calendar', '', calRows, preview.calendar);
+  section('exercise', 'Exercise', '', exerciseRows, preview.exercise);
+  section('other', 'Other', plural(otherRows.length, 'item'), otherRows, preview.other);
 
   return `
     <h1 class="page-title tl-title">Timeline</h1>
@@ -1209,13 +1241,17 @@ function renderTimeline() {
       <span><i class="lg-bar"></i>Event</span>
       <span><i class="tl-mark tl-calmark lg-cal">2</i>Calendar</span>
     </div>
-    <div class="tl-head-wrap" id="tl-head" aria-hidden="false">
-      <table class="tl" style="--n:${days.length}">${cols}<thead>${head}</thead></table>
+    <div class="tlx" style="--n:${n}">
+      <div class="tlx-head">
+        <div class="tlx-corner"><button class="tl-today-btn" data-action="tl-today">${ICON.target}Today</button></div>
+        <div class="tlx-dates" id="tl-head"><div class="tlx-in">${dates}</div></div>
+      </div>
+      <div class="tlx-body">
+        <div class="tlx-names">${names.join('')}</div>
+        <div class="tlx-grid" id="tl-scroll"><div class="tlx-in">${stripes}${rows.join('')}</div></div>
+      </div>
     </div>
-    <div class="tl-scroll" id="tl-scroll">
-      <table class="tl" style="--n:${days.length}">${cols}<tbody>${body}</tbody></table>
-    </div>
-    <p class="tl-tip">Tap a study cell to log what you studied or change the plan, a task cell to plan, move or finish it, or a date to open that day. The number under each date is that day's planned study total.</p>`;
+    <p class="tl-tip">Tap a study day to log what you studied or change the plan, a task day to plan, move or finish it, or a date to open that day. The number under each date is that day's planned study total.</p>`;
 }
 
 // The timeline is two parts: the date row, pinned under the top bar, and the
@@ -1274,10 +1310,10 @@ function bindTimelineScroll(sc) {
 
 function scrollTimelineToToday(smooth) {
   const sc = $('#tl-scroll');
-  const th = $('#tl-head .tl-day.is-today');
-  if (!sc || !th) return;
-  const nameW = $('#tl-head .tl-name')?.offsetWidth || 0;
-  sc.scrollTo({ left: Math.max(0, th.offsetLeft - nameW - th.offsetWidth), behavior: smooth ? 'smooth' : 'auto' });
+  const i = state.plan.days.findIndex((d) => d.key === todayKey());
+  if (!sc || i < 0) return;
+  const w = sc.scrollWidth / state.plan.days.length;
+  sc.scrollTo({ left: Math.max(0, (i - 1) * w), behavior: smooth ? 'smooth' : 'auto' });
 }
 
 // ---------- Exams ----------
@@ -1921,6 +1957,18 @@ document.addEventListener('click', (ev) => {
       return goToPage(el.dataset.view, true);
     case 'pick-day': return goDay(el.dataset.day);
     case 'open-day': selectDay(el.dataset.day, { smooth: false }); return goToPage('today', true);
+    case 'grid-cell': {
+      const days = state.plan.days;
+      const r = el.getBoundingClientRect();
+      const i = Math.max(0, Math.min(days.length - 1, Math.floor(((ev.clientX - r.left) / r.width) * days.length)));
+      const k = days[i].key;
+      const c = el.dataset.cell;
+      if (c === 'edit-hours') return item && editHours(item, k);
+      if (c === 'task-day') return item && taskDaySheet(item, k);
+      if (c === 'edit-cell') return item && editCell(item, k);
+      selectDay(k, { smooth: false });
+      return goToPage('today', true);
+    }
     case 'go-today': return goDay(clampDay(todayKey()));
     case 'hours': return item && setHours(item, el.dataset.day, toNumber(item.cells[el.dataset.day]) + Number(el.dataset.delta));
     case 'edit-hours': return item && editHours(item, el.dataset.day);
