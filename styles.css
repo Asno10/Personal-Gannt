@@ -952,3 +952,18 @@ button.event { width: 100%; text-align: left; }
   from { transform: translateX(0); }
   to { transform: translateX(calc(100cqw - var(--n) * var(--day-w))); }
 }
+
+/* ---------- Sharp top bar on iPad (build 15) ----------
+   On iPadOS 26 a home-screen web app gets the system's soft blur along the top
+   edge unless a solid fixed bar sits there; with the bar see-through, that blur
+   fell on the bar's own title, tabs and buttons. The bar is now solid paper
+   colour (a hairline appears once content scrolls under it), and the tabs are
+   centred without a half-pixel transform, which also softened their text. */
+html { background: var(--paper); }
+.bar, .bar.is-scrolled { background: var(--paper); -webkit-backdrop-filter: none; backdrop-filter: none; }
+.bar { box-shadow: none; }
+.bar.is-scrolled { box-shadow: inset 0 calc(-1 * var(--hair, 1px)) 0 var(--rule); }
+.bar .icon-btn { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--fill, var(--wash)); }
+@media (min-width: 760px) {
+  .tabs { left: 0; right: 0; margin: 0 auto; width: max-content; transform: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
