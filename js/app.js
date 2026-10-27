@@ -56,7 +56,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '16';
+const BUILD = '17';
 
 async function checkForUpdate() {
   try {
@@ -1078,14 +1078,27 @@ function renderTimeline() {
     if (!shut) for (const r of list) add({ ...r, cls: `${r.cls || ''} ${entering}` });
   };
 
-  // Study: one row per subject, with its exam at the end of the row.
+  // Study: one row per subject, with its exams at the end of the row. Deadlines
+  // and events whose area is a study subject sit on that subject's row too.
+  const studySubjects = new Set(state.plan.study.map((s) => s.subject));
+  const rowEventsFor = (subject) => ofType('event').filter((e) => e.start && e.area === subject);
+  const eventPill = (e) => {
+    const due = /deadline/i.test(e.subject);
+    const label = due ? 'Due' : /present/i.test(`${e.subject} ${e.title}`) ? 'Pres' : 'Event';
+    return `<span class="tl-exam-pill ${due ? 'is-due' : 'is-event'}">${label}${e.time ? `<small>${esc(e.time)}</small>` : ''}</span>`;
+  };
   const study = state.plan.study.map((s) => {
     const exam = state.plan.exams.find((e) => e.subject === s.subject);
+    // Pills by day: events first, so an exam on the same day takes the cell.
+    const pills = {};
+    for (const e of rowEventsFor(s.subject)) pills[e.start] = eventPill(e);
+    for (const e of state.plan.exams.filter((x) => x.subject === s.subject)) pills[e.start] = `<span class="tl-exam-pill">Exam${e.time ? `<small>${esc(e.time)}</small>` : ''}</span>`;
+    const nextDue = rowEventsFor(s.subject).filter((e) => /deadline/i.test(e.subject) && e.start >= tk).sort((a, b) => a.start.localeCompare(b.start))[0];
     const keys = Object.keys(s.cells).filter((k) => toNumber(s.cells[k]) > 0).sort();
-    const runEnd = [exam?.start, keys.at(-1)].filter(Boolean).sort().at(-1);
+    const runEnd = [...Object.keys(pills), keys.at(-1)].filter(Boolean).sort().at(-1);
     const total = keys.reduce((m, k) => m + toNumber(s.cells[k]), 0);
     let inner = '';
-    const shown = new Set([...keys, ...(exam?.start ? [exam.start] : []), ...Object.keys(logRowFor(s.subject)?.cells || {})]);
+    const shown = new Set([...keys, ...Object.keys(pills), ...Object.keys(logRowFor(s.subject)?.cells || {})]);
     // A thin line through the empty days between the first study day and the exam.
     if (keys[0] && runEnd && idx[keys[0]] != null && idx[runEnd] != null) {
       for (let i = idx[keys[0]] + 1, j; i < idx[runEnd]; i = j) {
@@ -1098,14 +1111,12 @@ function renderTimeline() {
     for (const k of shown) {
       const h = toNumber(s.cells[k]);
       const lg = k <= tk ? loggedOn(s.subject, k) : 0;
-      const isExam = exam?.start === k;
       const badge = lg ? `<span class="tl-log ${lg >= h ? 'is-good' : ''}">${fmtH(lg)}</span>` : '';
-      const body = isExam
-        ? `<span class="tl-exam-pill">Exam${exam.time ? `<small>${esc(exam.time)}</small>` : ''}</span>`
-        : h ? `<span class="tl-h" style="--a:${Math.round(18 + 40 * (h / maxH))}%">${fmtH(h)}</span>` : '';
+      const body = pills[k] || (h ? `<span class="tl-h" style="--a:${Math.round(18 + 40 * (h / maxH))}%">${fmtH(h)}</span>` : '');
       inner += at(k, body + badge, 'is-solid');
     }
-    return { cls: 'tl-study', color: subjectVar(s.subject), name: nameHtml({ name: s.subject, sub: `${fmtH(total)} h${exam ? `, exam ${shortLabel(exam.start)}` : ''}` }), cell: grid('edit-hours', s.id, inner) };
+    const sub = `${fmtH(total)} h${exam ? `, exam ${shortLabel(exam.start)}` : nextDue ? `, due ${shortLabel(nextDue.start)}` : ''}`;
+    return { cls: 'tl-study', color: subjectVar(s.subject), name: nameHtml({ name: s.subject, sub }), cell: grid('edit-hours', s.id, inner) };
   });
   const lonelyExams = state.plan.exams.filter((e) => !state.plan.study.some((s) => s.subject === e.subject)).map((e) => ({
     cls: 'tl-study', color: subjectVar(e.subject), name: nameHtml({ name: e.subject, sub: `Exam ${shortLabel(e.start)}`, action: `data-action="edit-task" data-id="${e.id}"` }),
@@ -1150,7 +1161,8 @@ function renderTimeline() {
   });
 
   // Deadlines and events kept in the sheet: a bar over the days they cover.
-  const eventRows = ofType('event').map((e) => {
+  // Those already shown on a study subject's row are left out here.
+  const eventRows = ofType('event').filter((e) => !(e.start && studySubjects.has(e.area))).map((e) => {
     const alert = /deadline/i.test(e.subject);
     const s0 = e.start;
     const s1 = e.end || e.start;

@@ -727,6 +727,8 @@ a, .link, .add-btn, .more summary, .tl-more th button { color: var(--accent); }
 .tl-day.is-today .tl-num { color: #fff; }
 .tl-h, .tl-pv-h { font-family: var(--font-c); }
 .tl-exam-pill { color: #fff; }
+.tl-exam-pill.is-due { background: var(--signal); color: var(--signal-ink); }
+.tl-exam-pill.is-event { background: transparent; color: var(--c, var(--ink-2)); box-shadow: inset 0 0 0 2px var(--c, var(--ink-2)); }
 .tl-today-btn { border: 0; background: var(--fill); color: var(--accent); }
 .tl-today-btn svg { color: var(--accent); }
 
