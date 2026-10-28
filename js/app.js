@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=20';
-import * as cal from './calendar.js?v=20';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=20';
+import * as api from './sheets.js?v=21';
+import * as cal from './calendar.js?v=21';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=21';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -58,7 +58,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '20';
+const BUILD = '21';
 
 async function checkForUpdate() {
   try {
@@ -1337,7 +1337,7 @@ function renderTimeline() {
     names.push(`<div class="tn tk-${kind} ${cls}"${st}>${name}</div>`);
     rows.push(`<div class="gr tk-${kind} ${cls}"${st}${cell}</div>`);
   };
-  const nameHtml = ({ name, sub = '', action = '' }) => `${action ? `<button ${action}>` : '<div class="tl-name-in">'}<span class="tl-label">${esc(name)}</span>${sub ? `<span class="tl-sub">${esc(sub)}</span>` : ''}${action ? '</button>' : '</div>'}`;
+  const nameHtml = ({ name, sub = '', action = '', flag = null }) => `${action ? `<button ${action}>` : '<div class="tl-name-in">'}<span class="tl-label">${esc(name)}${flagMark(flag)}</span>${sub ? `<span class="tl-sub">${esc(sub)}</span>` : ''}${action ? '</button>' : '</div>'}`;
   // cell: what a tap on an empty day does, then the filled days.
   const grid = (action, id, inner) => `${action ? ` data-action="grid-cell" data-cell="${action}"${id ? ` data-id="${id}"` : ''}` : ''}>${inner}`;
 
@@ -1403,7 +1403,8 @@ function renderTimeline() {
   const dots = (t, dotCls = '') => {
     const isDone = t.status.status === 'done';
     const pd = plannedDays(t);
-    return (pd.length ? pd : t.start ? [t.start] : []).map((k) => at(k, isDone ? `<span class="tl-done">${ICON.check}</span>` : `<span class="tl-dot ${dotCls}"></span>`)).join('');
+    const mark = !isDone && flagOf(t.id) ? `<span class="tl-flag" aria-label="Flagged for rescheduling">${ICON.flag}</span>` : '';
+    return (pd.length ? pd : t.start ? [t.start] : []).map((k) => at(k, isDone ? `<span class="tl-done">${ICON.check}</span>` : `<span class="tl-dot ${dotCls}"></span>${mark}`)).join('');
   };
 
   // Tasks: open ones first by date; done ones only when asked for.
@@ -1415,7 +1416,7 @@ function renderTimeline() {
     const late = isOverdue(t);
     return {
       kind: 'tall', cls: `tl-tasks ${isDone ? 'is-done' : ''} ${late ? 'is-late' : ''}`,
-      name: nameHtml({ name: t.status.title, sub: isDone ? 'Done' : late ? `${plural(daysBetween(taskDue(t), tk), 'day')} late` : [t.time, t.phase, t.subject].filter(Boolean).join(', '), action: `data-action="edit-task" data-id="${t.id}"` }),
+      name: nameHtml({ name: t.status.title, sub: isDone ? 'Done' : late ? `${plural(daysBetween(taskDue(t), tk), 'day')} late` : [t.time, t.phase, t.subject].filter(Boolean).join(', '), action: `data-action="edit-task" data-id="${t.id}"`, flag: isDone ? null : flagOf(t.id) }),
       cell: grid('task-day', t.id, dots(t)),
     };
   };
@@ -1431,7 +1432,7 @@ function renderTimeline() {
     const late = isOverdue(r);
     return {
       kind: 'tall', cls: `tl-tasks tl-reading ${isDone ? 'is-done' : ''} ${late ? 'is-late' : ''}`, color: subjectVar(r.subject),
-      name: nameHtml({ name: r.title, sub: [r.subject, r.hours ? fmtH(r.hours) + ' h' : '', isDone ? 'done' : late ? 'not read yet' : ''].filter(Boolean).join(', '), action: `data-action="edit-task" data-id="${r.id}"` }),
+      name: nameHtml({ name: r.title, sub: [r.subject, r.hours ? fmtH(r.hours) + ' h' : '', isDone ? 'done' : late ? 'not read yet' : ''].filter(Boolean).join(', '), action: `data-action="edit-task" data-id="${r.id}"`, flag: isDone ? null : flagOf(r.id) }),
       cell: grid('task-day', r.id, dots(r, 'tl-dot-sub')),
     };
   });
@@ -1446,8 +1447,8 @@ function renderTimeline() {
     const marks = Object.keys(e.cells).map((k) => at(k, `<span class="tl-bar ${alert ? 'is-alert' : ''}"></span>`)).join('');
     return {
       cls: `tl-events ${alert ? 'is-alert' : ''}`,
-      name: nameHtml({ name: e.title, sub: [e.subject, e.time].filter(Boolean).join(', '), action: `data-action="edit-task" data-id="${e.id}"` }),
-      cell: grid('open-day', '', (s0 ? at(s0, `<span class="tl-bar ${alert ? 'is-alert' : ''}"></span>`, 'is-bar', span) : '') + marks),
+      name: nameHtml({ name: e.title, sub: [e.subject, e.time].filter(Boolean).join(', '), action: `data-action="edit-task" data-id="${e.id}"`, flag: flagOf(e.id) }),
+      cell: grid('open-day', '', (s0 ? at(s0, `<span class="tl-bar ${alert ? 'is-alert' : ''}"></span>${flagOf(e.id) ? `<span class="tl-flag" aria-label="Flagged for rescheduling">${ICON.flag}</span>` : ''}`, 'is-bar', span) : '') + marks),
     };
   });
 
