@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=21';
-import * as cal from './calendar.js?v=21';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=21';
+import * as api from './sheets.js?v=22';
+import * as cal from './calendar.js?v=22';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=22';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -58,7 +58,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '21';
+const BUILD = '22';
 
 async function checkForUpdate() {
   try {
@@ -829,16 +829,8 @@ function goToPage(v, smooth) {
   const p = $('#pager');
   if (!p) return;
   setView(v);
-  const tabs = $('#tabs');
-  if (tabs) {
-    // The highlight springs to the tab on its own, ahead of the sliding page.
-    if (smooth && !reducedMotion()) {
-      tabs.classList.add('is-springing');
-      clearTimeout(tabs._spring);
-      tabs._spring = setTimeout(() => tabs.classList.remove('is-springing'), 560);
-    }
-    tabs.style.setProperty('--ti', pageIndex(v));
-  }
+  // The highlight springs to the tab on its own, ahead of the sliding page.
+  lensTo(pageIndex(v), smooth ? 'spring' : 'jump');
   pagerTarget = smooth && !reducedMotion() ? pageIndex(v) : null;
   p.scrollTo({ left: pageIndex(v) * p.clientWidth, behavior: pagerTarget == null ? 'auto' : 'smooth' });
 }
@@ -859,8 +851,67 @@ function bindPager(p) {
   // The glass highlight in the tab bar follows the pages as they are swiped.
   p.addEventListener('scroll', () => {
     if (pagerTarget != null) return;
-    $('#tabs')?.style.setProperty('--ti', (p.scrollLeft / (p.clientWidth || 1)).toFixed(3));
+    lensTo(p.scrollLeft / (p.clientWidth || 1), 'jump');
   }, { passive: true });
+}
+
+// The glass highlight is moved by a small spring run in JavaScript, not by a
+// CSS transition. Safari restarts a transform transition on every finger move,
+// and on iPhone that made the highlight lag behind the finger and then jump.
+// The spring also smooths over touch events that iOS delivers in bursts near
+// the bottom edge of the screen. Positions are in tabs: 0 is Day, 3 is Tasks.
+const lens = { x: 0, v: 0, target: 0, k: 0, c: 0, raf: 0, last: 0 };
+const LENS_FEEL = {
+  follow: { k: 1400, c: 75 }, // under the finger: firm, no overshoot
+  spring: { k: 320, c: 25 },  // let go or tapped: settles with a slight bounce
+};
+
+function paintLens() {
+  const g = $('#tabs .tab-glow');
+  if (!g) return;
+  // Grow toward the inside at the two ends, so the lifted glass stays on the bar.
+  // The bounce never carries the glass past the first or last tab.
+  const ends = Math.max(1, VIEWS.length - 1);
+  const x = Math.min(ends, Math.max(0, lens.x));
+  g.style.transformOrigin = `${(x / ends) * 100}% 50%`;
+  // The `translate` property is applied after the lift's `scale`, so lifting
+  // the glass no longer stretches its offset and pushes it off the bar.
+  g.style.translate = `${(x * 100).toFixed(2)}% 0`;
+}
+
+function lensTo(ti, how = 'spring') {
+  lens.target = ti;
+  if (how === 'jump' || reducedMotion()) {
+    cancelAnimationFrame(lens.raf);
+    lens.raf = 0;
+    lens.x = ti;
+    lens.v = 0;
+    paintLens();
+    return;
+  }
+  ({ k: lens.k, c: lens.c } = LENS_FEEL[how]);
+  if (lens.raf) return;
+  lens.last = performance.now();
+  const step = (now) => {
+    let dt = Math.min(0.05, (now - lens.last) / 1000);
+    lens.last = now;
+    // Small fixed steps keep the stiff spring stable at any frame rate.
+    while (dt > 0) {
+      const h = Math.min(dt, 1 / 240);
+      lens.v += (lens.k * (lens.target - lens.x) - lens.c * lens.v) * h;
+      lens.x += lens.v * h;
+      dt -= h;
+    }
+    if (Math.abs(lens.target - lens.x) < 0.002 && Math.abs(lens.v) < 0.01) {
+      lens.x = lens.target;
+      lens.v = 0;
+      lens.raf = 0;
+    } else {
+      lens.raf = requestAnimationFrame(step);
+    }
+    paintLens();
+  };
+  lens.raf = requestAnimationFrame(step);
 }
 
 // Touching the tab bar lifts the glass highlight under the finger; dragging
@@ -881,26 +932,28 @@ function bindTabDrag(nav) {
     tabTouchAt = Date.now();
     pagerTarget = 'drag';
     const ti = Math.round(tiAt(x0));
-    nav.classList.add('is-pressing', 'is-springing');
-    nav.style.setProperty('--ti', ti);
+    nav.classList.add('is-pressing');
+    lensTo(ti, 'spring');
     mark(ti);
   }, { passive: true });
   nav.addEventListener('touchmove', (ev) => {
     if (!active) return;
+    // Keep iOS from treating the slide as a scroll or a page gesture.
+    if (ev.cancelable) ev.preventDefault();
     const x = ev.touches[0].clientX;
     if (!moved && Math.abs(x - x0) < 6) return;
-    if (!moved) { moved = true; nav.classList.remove('is-springing'); nav.classList.add('is-dragging'); }
+    if (!moved) { moved = true; nav.classList.add('is-dragging'); }
     const ti = tiAt(x);
-    nav.style.setProperty('--ti', ti.toFixed(3));
+    lensTo(ti, 'follow');
     mark(Math.round(ti));
-  }, { passive: true });
+  }, { passive: false });
   const end = (cancel) => {
     if (!active) return;
     active = false;
     tabTouchAt = Date.now();
     nav.classList.remove('is-pressing', 'is-dragging');
     mark(-1);
-    const i = cancel ? pageIndex(state.view) : Math.round(parseFloat(nav.style.getPropertyValue('--ti')) || 0);
+    const i = cancel ? pageIndex(state.view) : Math.round(lens.target);
     pagerTarget = null;
     goToPage(VIEWS[i][0], true);
   };
