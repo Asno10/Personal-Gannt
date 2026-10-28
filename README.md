@@ -36,6 +36,22 @@ Writes are addressed by id: before each save the app reads the id column and fin
 
 Every item with a time, and every exam and event, has an event in the Personal Gantt calendar unless its `calendar` column says `off`. On each load the app creates, moves or deletes events to match the table, and removes events whose row is gone. Each event carries its item id as a private extended property, so two devices never create duplicates. Events in your other calendars (holiday calendars excluded) show read-only on the Day view and the Timeline; the Account sheet picks which.
 
+## Reschedule flags
+
+Any task, reading, event or exam, and any event from your other calendars on the Day view, can be flagged with **Reschedule later**, with an optional note such as "after midterms". Each flag is a row in the **Reschedule** tab:
+
+| Column | Meaning |
+|---|---|
+| id | `r-` and 6 characters |
+| kind | `item` (a row of Items) or `calendar` (an event in another calendar) |
+| ref, cal_id | The item id, or the event id and its calendar id |
+| title, was, note | What it is, when it was planned (`YYYY-MM-DD HH:MM`) and the note for the run |
+| status | `pending`, then `done`, `skipped` or `cancelled` |
+| flagged, handled | Timestamps |
+| result, new_when | What the run did, and the new date and time |
+
+The daily scheduled run moves every pending flag to a later date that fits, then marks it `done` with a one-line result, or `skipped` with the reason. The Tasks page lists pending flags and those handled in the last three days. Removing a flag sets it to `cancelled`.
+
 ## Publishing an update
 
 Raise the number in `version.json`, `BUILD` in `js/app.js` and the `?v=` values in `index.html` and the imports at the top of `js/app.js` and `js/calendar.js` together. Open copies of the app see the new number and reload themselves.

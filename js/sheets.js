@@ -97,12 +97,12 @@ const q = (name) => `'${name.replace(/'/g, "''")}'`;
 export const a1 = (sheet, cell) => `${q(sheet)}!${cell}`;
 
 export async function loadAll() {
-  const { items, settings } = CONFIG.sheets;
-  const ranges = [q(items), q(settings)];
-  const qs = ranges.map((r) => 'ranges=' + encodeURIComponent(r)).join('&') + '&valueRenderOption=FORMATTED_VALUE&majorDimension=ROWS';
+  const { items, settings, reschedule } = CONFIG.sheets;
+  const get = (names) => call('/values:batchGet?' + names.map((r) => 'ranges=' + encodeURIComponent(q(r))).join('&') + '&valueRenderOption=FORMATTED_VALUE&majorDimension=ROWS');
+  // The Reschedule tab is optional: if it is missing, the app still loads.
   const [meta, shown] = await Promise.all([
     call('?fields=properties.title,sheets.properties(sheetId,title)'),
-    call('/values:batchGet?' + qs),
+    get([items, settings, reschedule]).catch(() => get([items, settings])),
   ]);
   const ids = Object.fromEntries(meta.sheets.map((s) => [s.properties.title, s.properties.sheetId]));
   if (ids[items] === undefined) throw new Error(`The sheet has no "${items}" tab.`);
@@ -111,13 +111,14 @@ export async function loadAll() {
     sheetIds: ids,
     items: shown.valueRanges[0].values || [],
     settings: shown.valueRanges[1].values || [],
+    reschedule: shown.valueRanges[2] ? (shown.valueRanges[2].values || []) : null,
   };
 }
 
 // The id column as it is now, so writes land on the right rows even if rows
 // were added or removed since the last load (by Claude, another device, or by hand).
-export async function readIdColumn(col) {
-  const r = await call('/values/' + encodeURIComponent(a1(CONFIG.sheets.items, `${col}:${col}`)) + '?majorDimension=COLUMNS');
+export async function readIdColumn(col, sheet = CONFIG.sheets.items) {
+  const r = await call('/values/' + encodeURIComponent(a1(sheet, `${col}:${col}`)) + '?majorDimension=COLUMNS');
   const list = (r.values && r.values[0]) || [];
   const map = new Map();
   list.forEach((v, i) => { if (i > 0 && v) map.set(String(v).trim(), i + 1); });
@@ -136,8 +137,8 @@ export function writeCells(updates) {
 }
 
 // Writes whole rows below the last used row of the Items tab.
-export function appendRows(rows) {
-  return call('/values/' + encodeURIComponent(a1(CONFIG.sheets.items, 'A1')) + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', {
+export function appendRows(rows, sheet = CONFIG.sheets.items) {
+  return call('/values/' + encodeURIComponent(a1(sheet, 'A1')) + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', {
     method: 'POST',
     body: JSON.stringify({ majorDimension: 'ROWS', values: rows }),
   });

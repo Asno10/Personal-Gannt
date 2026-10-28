@@ -3,7 +3,7 @@
 export const CONFIG = {
   clientId: '10443527684-nri4sh8gvfiqemaqhmajjv4e5pbml3io.apps.googleusercontent.com',
   spreadsheetId: '1jG4tXKg-ORPOvX-KXkYkofwhxGGQFETegAIvoThLWpQ',
-  sheets: { items: 'Items', settings: 'Settings' },
+  sheets: { items: 'Items', settings: 'Settings', reschedule: 'Reschedule' },
   calendarName: 'Personal Gantt',
   timeZone: 'Europe/Istanbul',
 };

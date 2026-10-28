@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=16';
-import * as cal from './calendar.js?v=16';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=16';
+import * as api from './sheets.js?v=18';
+import * as cal from './calendar.js?v=18';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=18';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -45,6 +45,7 @@ const state = {
   tlShowDone: false,
   showDone: false,
   dirty: false,
+  flags: { list: [], ok: false },
 };
 
 const app = $('#app');
@@ -56,7 +57,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '17';
+const BUILD = '18';
 
 async function checkForUpdate() {
   try {
@@ -123,12 +124,15 @@ async function refresh({ first = false } = {}) {
   try {
     const raw = await api.loadAll();
     if (writes.size || inflight || pendingOps) return; // newer local edits are waiting; their own refresh follows
-    const json = JSON.stringify([raw.items, raw.settings]);
+    const json = JSON.stringify([raw.items, raw.settings, raw.reschedule]);
     const changed = json !== lastRawJson;
     lastRawJson = json;
     state.raw = raw;
     state.loadedAt = Date.now();
-    if (changed || first) state.plan = parseItems(raw.items, raw.settings, todayKey());
+    if (changed || first) {
+      state.plan = parseItems(raw.items, raw.settings, todayKey());
+      state.flags = parseFlags(raw.reschedule);
+    }
     if (first) {
       state.day = clampDay(todayKey());
       render();
@@ -284,6 +288,174 @@ async function removeItem(item, { message } = {}) {
     toast(`Not deleted. ${e.message}`);
   }
   await refresh();
+}
+
+// ---------- Reschedule flags ----------
+// Items and calendar events flagged here are listed in the Reschedule tab.
+// The daily scheduled run reads the pending rows, moves each one to a later
+// date that fits, and marks the row done with what it did.
+
+const FLAG_COLS = ['id', 'kind', 'ref', 'cal_id', 'title', 'was', 'note', 'status', 'flagged', 'handled', 'result', 'new_when'];
+
+function parseFlags(rows) {
+  if (!rows) return { list: [], ok: false };
+  const header = (rows[0] || []).map((h) => String(h).trim().toLowerCase());
+  const at = (r, f) => { const i = header.indexOf(f); return i >= 0 ? String(r[i] ?? '').trim() : ''; };
+  const list = rows.slice(1).map((r) => ({
+    id: at(r, 'id'), kind: at(r, 'kind'), ref: at(r, 'ref'), calId: at(r, 'cal_id'), title: at(r, 'title'),
+    was: at(r, 'was'), note: at(r, 'note'), status: (at(r, 'status') || 'pending').toLowerCase(),
+    flagged: at(r, 'flagged'), handled: at(r, 'handled'), result: at(r, 'result'), newWhen: at(r, 'new_when'),
+  })).filter((f) => f.id && f.ref);
+  return { list, ok: header.includes('id') && header.includes('ref') };
+}
+
+const pendingFlags = () => state.flags.list.filter((f) => f.status === 'pending');
+const flagOf = (ref, calId = '') => pendingFlags().find((f) => f.ref === ref && (f.kind !== 'calendar' || f.calId === calId));
+const flagMark = (flagged) => (flagged ? `<span class="flag-mark" title="Flagged for rescheduling" aria-label="Flagged for rescheduling">${ICON.flag}</span>` : '');
+
+function itemWhen(item) {
+  const due = taskDue(item) || item.start || '';
+  return [due, item.time].filter(Boolean).join(' ');
+}
+
+async function addFlag({ kind, ref, calId = '', title, was, note }) {
+  if (!state.flags.ok) { toast('The sheet has no Reschedule tab yet.'); return; }
+  const row = { id: newId('r'), kind, ref, cal_id: calId, title, was, note, status: 'pending', flagged: nowStamp(), handled: '', result: '', new_when: '' };
+  state.flags.list.push({ ...row, calId, newWhen: '' });
+  render();
+  pendingOps++;
+  setSync('saving');
+  try {
+    await api.appendRows([FLAG_COLS.map((c) => row[c] ?? '')], CONFIG.sheets.reschedule);
+    pendingOps--;
+    setSync('saved');
+    toast('Flagged. The next scheduled run will move it.');
+  } catch (e) {
+    pendingOps--;
+    if (e instanceof api.AuthError) return renderSignIn('Your session ended before the flag was saved. Sign in and flag it again.');
+    setSync('error');
+    toast(`Not flagged. ${e.message}`);
+  }
+  await refresh();
+}
+
+async function removeFlag(flag) {
+  flag.status = 'cancelled';
+  render();
+  pendingOps++;
+  setSync('saving');
+  try {
+    const sheet = CONFIG.sheets.reschedule;
+    const { map } = await api.readIdColumn('A', sheet);
+    const row = map.get(flag.id);
+    if (row) {
+      await api.writeCells([
+        { range: api.a1(sheet, `${colLetter(FLAG_COLS.indexOf('status'))}${row}`), value: 'cancelled' },
+        { range: api.a1(sheet, `${colLetter(FLAG_COLS.indexOf('handled'))}${row}`), value: nowStamp() },
+      ]);
+    }
+    pendingOps--;
+    setSync('saved');
+    toast('Flag removed.');
+  } catch (e) {
+    pendingOps--;
+    if (e instanceof api.AuthError) return renderSignIn('Your session ended before the flag was removed. Sign in and try again.');
+    setSync('error');
+    toast(`Flag not removed. ${e.message}`);
+  }
+  await refresh();
+}
+
+// Asks for an optional note, then flags.
+function flagSheet(target) {
+  openSheet(`
+    ${sheetHead('Flag for rescheduling', target.title)}
+    <p class="dlg-sub">${target.was ? `Planned for ${esc(whenText(target.was))}. ` : ''}The next scheduled run moves it to a later date that fits around your classes, exams and other plans.</p>
+    <label class="field"><span>Note for the run (optional)</span><input name="flag_note" autocomplete="off" placeholder="e.g. after midterms, a weekday evening"></label>
+    ${sheetActions('Flag')}`,
+  (d, which) => { if (which === 'save') addFlag({ ...target, note: (d.flag_note || '').trim() }); },
+  { onOpen(form) { form.querySelector('[name=flag_note]').focus(); } });
+}
+
+function whenText(was) {
+  const m = String(was).match(/^(\d{4}-\d{2}-\d{2})(?:\s+(\d{1,2}:\d{2}))?/);
+  if (!m) return was;
+  const d = relDay(m[1]);
+  return [/^(Today|Tomorrow|Yesterday)$/.test(d) ? d.toLowerCase() : d, m[2]].filter(Boolean).join(', ');
+}
+
+// The flag control inside an item's or event's sheet.
+function flagButton(flag) {
+  return flag
+    ? `<button type="button" class="flag-toggle is-on" data-flag-toggle>
+        <span class="flag-ico" aria-hidden="true">${ICON.flag}</span>
+        <span><b>Flagged for rescheduling</b><small>${flag.note ? `Note: ${esc(flag.note)}. ` : ''}Tap to remove the flag.</small></span>
+      </button>`
+    : `<button type="button" class="flag-toggle" data-flag-toggle>
+        <span class="flag-ico" aria-hidden="true">${ICON.flag}</span>
+        <span><b>Reschedule later</b><small>Flag it, and the next scheduled run moves it to a later date.</small></span>
+      </button>`;
+}
+
+function wireFlag(form, flag, target) {
+  form.querySelector('[data-flag-toggle]')?.addEventListener('click', () => {
+    closeSheet(() => (flag ? removeFlag(flag) : flagSheet(target)));
+  });
+}
+
+const findCalEvent = (calId, id, k) => calEventsOn(k).find((e) => e.calId === calId && e.id === id);
+
+function calEventSheet(e, k) {
+  const flag = flagOf(e.id, e.calId);
+  const when = e.allDay ? 'All day' : [e.time, e.endTime].filter(Boolean).join(' to ');
+  openSheet(`
+    ${sheetHead(e.title, [longLabel(k), when].filter(Boolean).join(', '))}
+    <p class="dlg-sub">From your <b>${esc(e.calName)}</b> calendar${e.location ? `, at ${esc(e.location)}` : ''}. Events from other calendars are read-only here.</p>
+    ${flagButton(flag)}`,
+  () => {},
+  { onOpen(form) { wireFlag(form, flag, { kind: 'calendar', ref: e.id, calId: e.calId, title: e.title, was: [k, e.allDay ? '' : e.time].filter(Boolean).join(' ') }); } });
+}
+
+function renderFlagsBlock() {
+  if (!state.flags.ok) return '';
+  const pending = pendingFlags();
+  const recent = state.flags.list.filter((f) => ['done', 'skipped'].includes(f.status) && f.handled && f.handled.slice(0, 10) >= addDays(todayKey(), -3)).slice(-5).reverse();
+  if (!pending.length && !recent.length) return '';
+  const line = (f, done) => `
+    <li class="flag-row ${done ? 'is-handled' : ''}">
+      <span class="flag-ico" aria-hidden="true">${ICON.flag}</span>
+      <button class="flag-body" data-action="flag-row" data-flag="${esc(f.id)}">
+        <span class="task-title">${esc(f.title)}</span>
+        <span class="task-meta">${done
+          ? esc(f.status === 'skipped' ? `Not moved: ${f.result || 'see the Reschedule tab'}` : (f.result || `Moved to ${whenText(f.newWhen)}`))
+          : esc([f.was ? `Planned for ${whenText(f.was)}` : '', f.kind === 'calendar' ? 'calendar event' : '', f.note].filter(Boolean).join(', '))}</span>
+      </button>
+    </li>`;
+  return `
+    <section class="block">
+      ${pending.length ? `
+        <h2 class="group">To reschedule<span>${pending.length}</span></h2>
+        <ul class="task-list">${pending.map((f) => line(f, false)).join('')}</ul>
+        <p class="hint">Moved at the next scheduled run. Tap one to remove its flag.</p>` : ''}
+      ${recent.length ? `
+        <h2 class="group">Rescheduled recently<span>${recent.length}</span></h2>
+        <ul class="task-list">${recent.map((f) => line(f, true)).join('')}</ul>` : ''}
+    </section>`;
+}
+
+function flagRowSheet(f) {
+  if (f.status !== 'pending') {
+    openSheet(`
+      ${sheetHead(f.title, f.status === 'skipped' ? 'Not moved' : 'Rescheduled')}
+      <p class="dlg-sub">${esc(f.result || (f.newWhen ? `Moved to ${whenText(f.newWhen)}.` : ''))}</p>`, () => {});
+    return;
+  }
+  openSheet(`
+    ${sheetHead(f.title, f.was ? `Planned for ${whenText(f.was)}` : '')}
+    ${f.note ? `<p class="dlg-sub">Note: ${esc(f.note)}</p>` : ''}
+    ${flagButton(f)}`,
+  () => {},
+  { onOpen(form) { wireFlag(form, f, null); } });
 }
 
 function setSync(s) {
@@ -878,7 +1050,7 @@ function renderToday() {
     <section class="block">
       <div class="block-head"><h2>Calendar</h2><span class="block-meta">${calMeta()}</span></div>
       ${events.map((e) => eventLine(e, k)).join('')}
-      ${calEvents.map((e) => `<div class="event is-cal" style="--c:${esc(e.color || 'var(--ink-3)')}"><span class="event-kind">${e.allDay ? 'All day' : esc(e.time + (e.endTime ? ' to ' + e.endTime : ''))}</span><span>${esc(e.title)}<small class="event-cal">${esc(e.calName)}</small></span></div>`).join('')}
+      ${calEvents.map((e) => `<button class="event is-cal" style="--c:${esc(e.color || 'var(--ink-3)')}" data-action="cal-event" data-cal="${esc(e.calId)}" data-ev="${esc(e.id)}" data-day="${k}"><span class="event-kind">${e.allDay ? 'All day' : esc(e.time + (e.endTime ? ' to ' + e.endTime : ''))}</span><span>${esc(e.title)}${flagMark(flagOf(e.id, e.calId))}<small class="event-cal">${esc(e.calName)}</small></span></button>`).join('')}
       ${!events.length && !calEvents.length ? `<p class="note is-quiet">${state.cal.status === 'ok' ? 'Nothing in your calendars.' : state.cal.status === 'off' ? 'Calendar not connected. See Account.' : 'Loading calendars.'}</p>` : ''}
     </section>
 
@@ -913,7 +1085,7 @@ function calMeta() {
 
 function eventLine(e, k) {
   const alert = /deadline/i.test(e.subject);
-  return `<button class="event ${alert ? 'is-alert' : ''}" data-action="edit-task" data-id="${e.id}"><span class="event-kind">${esc(e.time || e.subject || 'Event')}</span><span>${esc(e.title)}${e.time && e.subject ? `<small class="event-cal">${esc(e.subject)}</small>` : ''}</span></button>`;
+  return `<button class="event ${alert ? 'is-alert' : ''}" data-action="edit-task" data-id="${e.id}"><span class="event-kind">${esc(e.time || e.subject || 'Event')}</span><span>${esc(e.title)}${flagMark(flagOf(e.id))}${e.time && e.subject ? `<small class="event-cal">${esc(e.subject)}</small>` : ''}</span></button>`;
 }
 
 function renderStrip() {
@@ -1001,7 +1173,7 @@ function taskRow(t, { hideDate = false, reading = false } = {}) {
     <li class="task ${done ? 'is-done' : ''} ${isRead ? 'is-reading' : ''} ${state.justToggled === t.id ? 'is-popping' : ''}" ${isRead ? `style="--c:${subjectVar(t.subject)}"` : ''}>
       <button class="check" data-action="toggle-task" data-id="${t.id}" role="checkbox" aria-checked="${done}" aria-label="${done ? 'Mark as not done' : 'Mark as done'}: ${esc(st.title)}">${ICON.check}</button>
       <button class="task-body" data-action="edit-task" data-id="${t.id}">
-        <span class="task-title">${st.prio ? `<span class="prio prio-${esc(st.prio.slice(1))}">${esc(st.prio)}</span>` : ''}${esc(st.title)}</span>
+        <span class="task-title">${st.prio ? `<span class="prio prio-${esc(st.prio.slice(1))}">${esc(st.prio)}</span>` : ''}${esc(st.title)}${flagMark(flagOf(t.id))}</span>
         ${st.note ? `<span class="task-note">${esc(st.note)}</span>` : ''}
         <span class="task-meta">${esc(where)}</span>
       </button>
@@ -1452,6 +1624,7 @@ function renderTasks() {
     <div class="segmented" role="tablist">
       ${[['open', 'To do'], ['done', 'Done'], ['all', 'All']].map(([v, l]) => `<button role="tab" aria-selected="${f === v}" data-action="task-filter" data-filter="${v}">${l} <span>${count(v)}</span></button>`).join('')}
     </div>
+    ${f !== 'done' ? renderFlagsBlock() : ''}
     ${sections.map(([label, list]) => `
       <section class="block">
         <h2 class="group ${label === 'Overdue' ? 'is-alert' : ''}">${label}<span>${list.length}</span></h2>
@@ -1822,6 +1995,7 @@ function editTask(item) {
       <span class="check" aria-hidden="true">${ICON.check}</span>
       <span><b>${done ? 'Done' : 'Not done yet'}</b><small>${done ? (st.doneOn ? `Finished ${esc(st.doneOn)}. Tap to reopen.` : 'Tap to reopen.') : 'Tap to mark as done.'}</small></span>
     </button>` : ''}
+    ${flagButton(flagOf(item.id))}
     ${taskForm(item, due)}
     ${sheetActions('Save', `<button class="btn btn-quiet btn-danger" value="delete" formnovalidate data-confirm>Delete</button>`)}`,
   (d, which) => {
@@ -1845,6 +2019,7 @@ function editTask(item) {
       wireChoices(form);
       // Done toggles straight away; the rest waits for Save.
       form.querySelector('[data-toggle-done]')?.addEventListener('click', () => closeSheet(() => toggleTask(item)));
+      wireFlag(form, flagOf(item.id), { kind: 'item', ref: item.id, title: item.title || item.subject || item.id, was: itemWhen(item) });
       const del = form.querySelector('[data-confirm]');
       del.addEventListener('click', (ev) => {
         if (del.dataset.armed) return;
@@ -1994,6 +2169,8 @@ document.addEventListener('click', (ev) => {
     case 'edit-hours': return item && editHours(item, el.dataset.day);
     case 'toggle-task': return item && toggleTask(item);
     case 'edit-task': return item && editTask(item);
+    case 'cal-event': { const e = findCalEvent(el.dataset.cal, el.dataset.ev, el.dataset.day); return e && calEventSheet(e, el.dataset.day); }
+    case 'flag-row': { const f = state.flags.list.find((x) => x.id === el.dataset.flag); return f && flagRowSheet(f); }
     case 'move-task': return item && moveTaskSheet(item);
     case 'task-day': return item && taskDaySheet(item, el.dataset.day);
     case 'log-hours': return logHours(el.dataset.subject, el.dataset.day);

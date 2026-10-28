@@ -984,3 +984,19 @@ html { background: var(--paper); }
   background-color: var(--paper);
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
+
+/* Reschedule flags */
+.flag-mark { display: inline-flex; vertical-align: -2px; margin-left: 6px; color: var(--alert); }
+.flag-mark svg { width: 14px; height: 14px; }
+button.event { width: 100%; text-align: left; }
+.flag-toggle { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 10px 12px; border-radius: 12px; background: var(--wash); margin-bottom: 4px; }
+.flag-toggle b { display: block; font-weight: 600; }
+.flag-toggle small { display: block; font-size: 0.82rem; color: var(--ink-2); }
+.flag-ico { display: inline-flex; flex: none; color: var(--ink-3); }
+.flag-ico svg { width: 19px; height: 19px; }
+.flag-toggle.is-on { background: color-mix(in srgb, var(--alert) 12%, transparent); }
+.flag-toggle.is-on .flag-ico, .flag-row .flag-ico { color: var(--alert); }
+.flag-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: var(--hair) solid var(--rule); }
+.flag-row.is-handled .flag-ico { color: var(--s4); }
+.flag-body { display: grid; gap: 2px; text-align: left; flex: 1; min-width: 0; }
+.block .hint + .group { margin-top: 18px; }
