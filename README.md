@@ -52,6 +52,10 @@ Any task, reading, event or exam, and any event from your other calendars on the
 
 The daily scheduled run moves every pending flag to a later date that fits, then marks it `done` with a one-line result, or `skipped` with the reason. The Tasks page lists pending flags and those handled in the last three days. Removing a flag sets it to `cancelled`.
 
+## Archive
+
+**Archive past** on the Timeline moves every row that ended before today to the **Archive: Items** tab (same columns plus `archived_on`) and sets `plan_start` in Settings to today, so the app and the chart start from today. It asks for confirmation first. Kept in Items: open tasks and readings (they show as overdue), and the study plans and logs of subjects with an exam still ahead, since the exam cards need them. Past calendar events are left in place: the calendar clean-up only looks at events from `plan_start` onward. Archived rows can be copied back to Items by hand.
+
 ## Publishing an update
 
 Raise the number in `version.json`, `BUILD` in `js/app.js` and the `?v=` values in `index.html` and the imports at the top of `js/app.js` and `js/calendar.js` together. Open copies of the app see the new number and reload themselves.

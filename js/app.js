@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=18';
-import * as cal from './calendar.js?v=18';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=18';
+import * as api from './sheets.js?v=19';
+import * as cal from './calendar.js?v=19';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=19';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -14,6 +14,7 @@ const dowLabel = (k) => dateOfKey(k).toLocaleDateString('en-GB', { weekday: 'sho
 const daysBetween = (a, b) => Math.round((dateOfKey(b) - dateOfKey(a)) / 86400000);
 const addDays = (k, n) => { const d = dateOfKey(k); d.setDate(d.getDate() + n); return keyOfDate(d); };
 const todayKey = () => keyOfDate(new Date());
+const keysBetween = (a, b) => { const out = []; for (let k = a, n = 0; k <= b && n < 400; k = addDays(k, 1), n++) out.push(k); return out; };
 const plural = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 
 // "Today", "Tomorrow", "Yesterday", or "Mon 26 Oct".
@@ -57,7 +58,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '18';
+const BUILD = '19';
 
 async function checkForUpdate() {
   try {
@@ -458,6 +459,102 @@ function flagRowSheet(f) {
   { onOpen(form) { wireFlag(form, f, null); } });
 }
 
+// ---------- Archive ----------
+// Moves rows that ended before today to the "Archive: Items" tab and starts
+// the chart from today. Kept: open tasks and readings (they show as overdue),
+// and study plans and logs of subjects with an exam still ahead, which the
+// exam cards need for their progress figures.
+
+function lastDayOf(i) {
+  return [i.end || i.start, ...Object.keys(i.cells)].filter(Boolean).sort().at(-1) || '';
+}
+
+function archiveCandidates(tk) {
+  const examAhead = new Set(state.plan.exams.filter((e) => (e.end || e.start) >= tk).map((e) => e.subject));
+  return state.plan.items.filter((i) => {
+    if (!i.id) return false;
+    const last = lastDayOf(i);
+    const past = Boolean(last) && last < tk;
+    if (i.type === 'task' || i.type === 'reading') return i.status.status === 'done' && (past || (!last && i.doneOn && i.doneOn < tk));
+    if (i.type === 'study' || i.type === 'log') return past && !examAhead.has(i.subject);
+    return past;
+  });
+}
+
+const ARCH_LABEL = { task: ['done task', 'done tasks'], reading: ['reading', 'readings'], event: ['event', 'events'], exam: ['exam', 'exams'], exercise: ['exercise block', 'exercise blocks'], note: ['note', 'notes'], study: ['study plan', 'study plans'], log: ['study log', 'study logs'] };
+
+function archiveSheet() {
+  const tk = todayKey();
+  const list = archiveCandidates(tk);
+  const by = {};
+  for (const i of list) by[i.type] = (by[i.type] || 0) + 1;
+  const parts = Object.entries(by).map(([t, n]) => { const l = ARCH_LABEL[t] || ['other item', 'other items']; return `${n} ${n === 1 ? l[0] : l[1]}`; });
+  const overdue = allTasks().concat(readings()).filter((t) => isOverdue(t)).length;
+  const already = state.plan.days[0]?.key === tk;
+  openSheet(`
+    ${sheetHead('Archive the past?', `The chart will start from today, ${longLabel(tk)}.`)}
+    <div class="arch-box">
+      ${list.length
+        ? `<p><b>${plural(list.length, 'item')}</b> that ended before today will move to the <b>Archive: Items</b> tab of your sheet and leave the app:</p><p class="arch-parts">${esc(parts.join(', '))}</p>`
+        : `<p>No items ended before today, so nothing moves to the archive.${already ? ' The chart already starts today.' : ''}</p>`}
+    </div>
+    <ul class="arch-keep">
+      ${overdue ? `<li>${plural(overdue, 'overdue task or reading', 'overdue tasks and readings')} stay${overdue === 1 ? 's' : ''} in the plan.</li>` : ''}
+      <li>Study hours for exams still ahead are kept, so exam progress stays correct.</li>
+      <li>Past events stay in your Personal Gantt calendar.</li>
+    </ul>
+    <p class="dlg-sub arch-warn">This cannot be undone in the app. Archived rows can be copied back to the Items tab by hand.</p>
+    <div class="dlg-actions">
+      <button class="btn btn-quiet" value="cancel" formnovalidate>Cancel</button><span class="spacer"></span>
+      <button class="btn btn-primary btn-danger-fill" value="archive">${list.length ? `Archive ${plural(list.length, 'item')}` : 'Start from today'}</button>
+    </div>`,
+  (d, which) => { if (which === 'archive') archivePast(); });
+}
+
+async function archivePast() {
+  await flush();
+  await refresh(); // work from the sheet as it is now
+  const tk = todayKey();
+  const list = archiveCandidates(tk);
+  pendingOps++;
+  setSync('saving');
+  try {
+    if (list.length) {
+      const sheet = CONFIG.sheets.archive;
+      const itemsHeader = state.raw.items[0].map((h) => String(h).trim());
+      let header = await api.readHeader(sheet);
+      if (!header || !header.length) {
+        header = [...itemsHeader, 'archived_on'];
+        await api.addSheet(sheet, header);
+      }
+      header = header.map((h) => String(h).trim().toLowerCase());
+      const stamp = nowStamp();
+      const rows = list.map((i) => {
+        const src = state.raw.items[i.row - 1] || [];
+        const byName = Object.fromEntries(itemsHeader.map((h, c) => [h.toLowerCase(), src[c] ?? '']));
+        byName.archived_on = stamp;
+        return header.map((h) => (byName[h] == null ? '' : String(byName[h])));
+      });
+      await api.appendRows(rows, sheet);
+      // Rows by id as they are now, then delete them in one request.
+      const { map } = await api.readIdColumn(colLetter(colOf('id')));
+      await api.deleteRows(state.raw.sheetIds[CONFIG.sheets.items], list.map((i) => map.get(i.id)).filter(Boolean));
+    }
+    await saveSetting('plan_start', tk);
+    pendingOps--;
+    setSync('saved');
+    toast(list.length ? `Archived ${plural(list.length, 'item')}. The chart starts today.` : 'The chart starts today.');
+  } catch (e) {
+    pendingOps--;
+    if (e instanceof api.AuthError) return renderSignIn('Your session ended before archiving finished. Sign in and check the Archive: Items tab before trying again.');
+    setSync('error');
+    toast(`Archiving stopped. ${e.message}`);
+  }
+  state.day = clampDay(todayKey());
+  await refresh();
+  if ($('#tl-scroll')) scrollTimelineToToday(false);
+}
+
 function setSync(s) {
   state.sync = s;
   clearTimeout(savedTimer);
@@ -537,9 +634,13 @@ async function syncCalendar({ force = false } = {}) {
     // Events whose item no longer exists in the sheet.
     if (state.plan.items.length) {
       const ids = new Set(state.plan.items.map((i) => i.id));
-      const mine = await cal.listEvents(id, addDays(todayKey(), -120), null);
+      // Only from the chart's first day: rows archived from before it keep their events.
+      const from = [addDays(todayKey(), -120), state.plan.days[0]?.key || ''].sort().at(-1);
+      const mine = await cal.listEvents(id, from, null);
       for (const ev of mine) {
         const pg = ev.extendedProperties?.private?.pgId;
+        const startK = (ev.start?.date || ev.start?.dateTime || '').slice(0, 10);
+        if (startK < from) continue;
         if (pg && !ids.has(pg)) { await cal.deleteEvent(id, ev.id); changes++; }
       }
     }
@@ -1416,7 +1517,10 @@ function renderTimeline() {
   section('other', 'Other', plural(otherRows.length, 'item'), otherRows, preview.other);
 
   return `
-    <h1 class="page-title tl-title">Timeline</h1>
+    <div class="tl-title-row">
+      <h1 class="page-title tl-title">Timeline</h1>
+      <button class="tl-today-btn tl-archive-btn" data-action="archive">${ICON.archive}Archive past</button>
+    </div>
     <div class="tl-legend" aria-label="Legend">
       <span><i class="lg-h"></i>Planned hours</span>
       <span><i class="tl-log is-good lg-log">2</i>Studied</span>
@@ -1526,14 +1630,15 @@ function renderExams() {
 // day-by-day chart.
 function examCard(e, tk) {
   const study = state.plan.study.find((s) => s.subject === e.subject);
-  const active = study ? state.plan.days.filter((d) => d.key <= e.start).map((d) => ({ k: d.key, h: toNumber(study.cells[d.key]) })).filter((x) => x.h > 0) : [];
+  // From the study row itself, so days before the chart's first day still count.
+  const active = study ? Object.entries(study.cells).filter(([k]) => k <= e.start).map(([k, v]) => ({ k, h: toNumber(v) })).filter((x) => x.h > 0).sort((a, b) => a.k.localeCompare(b.k)) : [];
   const total = active.reduce((n, x) => n + x.h, 0);
   // Planned up to yesterday, against what was actually logged (up to the exam).
   const dueSoFar = active.filter((x) => x.k < tk).reduce((n, x) => n + x.h, 0);
   const studied = loggedUpTo(e.subject, e.start);
   const logCells = Object.entries(logRowFor(e.subject)?.cells || {}).filter(([d, v]) => d <= e.start && toNumber(v) > 0).map(([d]) => d);
   const firstK = [active[0]?.k, ...logCells].filter(Boolean).sort()[0];
-  const span = firstK ? state.plan.days.filter((d) => d.key >= firstK && d.key <= e.start) : [];
+  const span = firstK ? keysBetween(firstK, e.start).map((key) => ({ key })) : [];
   const max = Math.max(1, ...span.map((d) => Math.max(toNumber(study?.cells[d.key]), loggedOn(e.subject, d.key))));
   const n = daysBetween(tk, e.start);
   const rooms = (((e.notes + ' ' + e.task).match(/rooms?\s+([\d,\s]+)/i) || [])[1] || '').trim().replace(/,$/, '');
@@ -2180,6 +2285,7 @@ document.addEventListener('click', (ev) => {
     case 'task-filter': state.taskFilter = el.dataset.filter; return render();
     case 'toggle-done': state.showDone = !state.showDone; return render();
     case 'tl-today': return scrollTimelineToToday(true);
+    case 'archive': return archiveSheet();
     case 'toggle-exam': {
       const sub = el.dataset.subject;
       state.examOpen ||= new Set();
@@ -2274,6 +2380,7 @@ const ICON = {
   target: svg('<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/>'),
   day: svg('<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/><circle cx="12" cy="15" r="1.6" fill="currentColor" stroke="none"/>'),
   grid: svg('<path d="M4 6h9M4 12h14M4 18h7"/><path d="M15 6h5M20 18h-6" opacity=".45"/>'),
+  archive: svg('<rect x="3.5" y="4.5" width="17" height="4" rx="1"/><path d="M5 8.5v10a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-10"/><path d="M10 12.5h4"/>'),
   flag: svg('<path d="M6 21V4"/><path d="M6 4h11l-2 4 2 4H6"/>'),
   list: svg('<path d="M9 7h11M9 12h11M9 17h11"/><path d="M4 7l1 1 2-2M4 12l1 1 2-2M4 17l1 1 2-2"/>'),
 };

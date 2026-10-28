@@ -1000,3 +1000,15 @@ button.event { width: 100%; text-align: left; }
 .flag-row.is-handled .flag-ico { color: var(--s4); }
 .flag-body { display: grid; gap: 2px; text-align: left; flex: 1; min-width: 0; }
 .block .hint + .group { margin-top: 18px; }
+
+/* Archive */
+.tl-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-right: 16px; }
+.tl-title-row .page-title { margin-bottom: 14px; }
+.tl-title-row .tl-archive-btn { display: inline-flex; flex: none; min-height: 34px; padding: 5px 12px; }
+.tl-archive-btn svg { color: var(--ink-2) !important; }
+.arch-box { padding: 12px 14px; border-radius: 12px; background: var(--wash); }
+.arch-box p { margin: 0; }
+.arch-box .arch-parts { margin-top: 6px; color: var(--ink-2); font-size: 0.9rem; }
+.arch-keep { margin: 12px 0 4px; padding-left: 20px; color: var(--ink-2); font-size: 0.9rem; display: grid; gap: 4px; }
+.arch-warn { color: var(--alert); }
+.btn-danger-fill { background: var(--alert) !important; border-color: var(--alert) !important; color: #fff !important; }

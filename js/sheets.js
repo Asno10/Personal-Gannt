@@ -153,3 +153,49 @@ export function deleteRow(sheetId, row) {
     }),
   });
 }
+
+// Deletes several rows (1-based) in one request, bottom first so the
+// remaining row numbers stay valid while it runs.
+export function deleteRows(sheetId, rows) {
+  const sorted = [...new Set(rows)].sort((a, b) => b - a);
+  if (!sorted.length) return Promise.resolve({});
+  return call(':batchUpdate', {
+    method: 'POST',
+    body: JSON.stringify({
+      requests: sorted.map((row) => ({ deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: row - 1, endIndex: row } } })),
+    }),
+  });
+}
+
+// The header row of a tab, or null if the tab does not exist.
+export async function readHeader(sheet) {
+  try {
+    const r = await call('/values/' + encodeURIComponent(a1(sheet, '1:1')));
+    return (r.values && r.values[0]) || [];
+  } catch (e) {
+    if (e instanceof AuthError) throw e;
+    if (/unable to parse range/i.test(e.message)) return null;
+    throw e;
+  }
+}
+
+// Adds a tab with a bold, frozen header row.
+export async function addSheet(title, header) {
+  const r = await call(':batchUpdate', {
+    method: 'POST',
+    body: JSON.stringify({ requests: [{ addSheet: { properties: { title, gridProperties: { frozenRowCount: 1 } } } }] }),
+  });
+  const sheetId = r.replies[0].addSheet.properties.sheetId;
+  await call(':batchUpdate', {
+    method: 'POST',
+    body: JSON.stringify({ requests: [{ repeatCell: { range: { sheetId, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { textFormat: { bold: true } } }, fields: 'userEnteredFormat.textFormat.bold' } }] }),
+  });
+  await writeCells(header.map((h, i) => ({ range: a1(title, `${colLetterOf(i)}1`), value: h })));
+  return sheetId;
+}
+
+function colLetterOf(i) {
+  let s = '';
+  for (i += 1; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s;
+  return s;
+}
