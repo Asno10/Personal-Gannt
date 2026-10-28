@@ -465,6 +465,9 @@ code { font-size: 0.9em; background: var(--wash); padding: 0.1em 0.35em; border-
 }
 .tl-log.is-good { background: var(--s4); color: #fff; box-shadow: 0 0 0 1.5px var(--paper); }
 .tl-legend .lg-log { position: static; display: inline-grid; }
+/* Reschedule flag on a study cell */
+.tl-flag { position: absolute; left: 2px; top: 2px; z-index: 1; display: inline-flex; color: var(--alert); }
+.tl-flag svg { width: 11px; height: 11px; }
 
 /* Sheets (dialogs): bottom sheet on phones, centred card on wider screens */
 dialog {

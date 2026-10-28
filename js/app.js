@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=19';
-import * as cal from './calendar.js?v=19';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=19';
+import * as api from './sheets.js?v=20';
+import * as cal from './calendar.js?v=20';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=20';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -58,7 +58,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '19';
+const BUILD = '20';
 
 async function checkForUpdate() {
   try {
@@ -311,7 +311,9 @@ function parseFlags(rows) {
 }
 
 const pendingFlags = () => state.flags.list.filter((f) => f.status === 'pending');
-const flagOf = (ref, calId = '') => pendingFlags().find((f) => f.ref === ref && (f.kind !== 'calendar' || f.calId === calId));
+const flagOf = (ref, calId = '') => pendingFlags().find((f) => f.kind !== 'study' && f.ref === ref && (f.kind !== 'calendar' || f.calId === calId));
+// A study flag is for one subject on one day: ref is the study row, was is the day.
+const studyFlagOf = (item, k) => pendingFlags().find((f) => f.kind === 'study' && f.ref === item.id && f.was.slice(0, 10) === k);
 const flagMark = (flagged) => (flagged ? `<span class="flag-mark" title="Flagged for rescheduling" aria-label="Flagged for rescheduling">${ICON.flag}</span>` : '');
 
 function itemWhen(item) {
@@ -429,7 +431,7 @@ function renderFlagsBlock() {
         <span class="task-title">${esc(f.title)}</span>
         <span class="task-meta">${done
           ? esc(f.status === 'skipped' ? `Not moved: ${f.result || 'see the Reschedule tab'}` : (f.result || `Moved to ${whenText(f.newWhen)}`))
-          : esc([f.was ? `Planned for ${whenText(f.was)}` : '', f.kind === 'calendar' ? 'calendar event' : '', f.note].filter(Boolean).join(', '))}</span>
+          : esc([f.was ? `Planned for ${whenText(f.was)}` : '', f.kind === 'calendar' ? 'calendar event' : f.kind === 'study' ? 'study session' : '', f.note].filter(Boolean).join(', '))}</span>
       </button>
     </li>`;
   return `
@@ -1246,7 +1248,7 @@ function studyRow(item, hours, k) {
     <li class="study" style="--c:${subjectVar(item.subject)}">
       <span class="study-swatch" aria-hidden="true"></span>
       <div class="study-main">
-        <button class="study-name" data-action="edit-hours" data-id="${item.id}" data-day="${k}">${esc(item.subject)}</button>
+        <button class="study-name" data-action="edit-hours" data-id="${item.id}" data-day="${k}">${esc(item.subject)}${flagMark(studyFlagOf(item, k))}</button>
         ${k <= todayKey() ? (() => {
           const l = loggedOn(item.subject, k);
           return `<button class="log-btn ${l ? 'is-logged' : ''} ${l && l >= hours ? 'is-good' : ''}" data-action="log-hours" data-subject="${esc(item.subject)}" data-day="${k}">${l ? `${ICON.check}Studied ${fmtH(l)} h` : `${ICON.plus}Log studied time`}</button>`;
@@ -1386,7 +1388,8 @@ function renderTimeline() {
       const lg = k <= tk ? loggedOn(s.subject, k) : 0;
       const badge = lg ? `<span class="tl-log ${lg >= h ? 'is-good' : ''}">${fmtH(lg)}</span>` : '';
       const body = pills[k] || (h ? `<span class="tl-h" style="--a:${Math.round(18 + 40 * (h / maxH))}%">${fmtH(h)}</span>` : '');
-      inner += at(k, body + badge, 'is-solid');
+      const mark = h && studyFlagOf(s, k) ? `<span class="tl-flag" aria-label="Flagged for rescheduling">${ICON.flag}</span>` : '';
+      inner += at(k, body + badge + mark, 'is-solid');
     }
     const sub = `${fmtH(total)} h${exam ? `, exam ${shortLabel(exam.start)}` : nextDue ? `, due ${shortLabel(nextDue.start)}` : ''}`;
     return { cls: 'tl-study', color: subjectVar(s.subject), name: nameHtml({ name: s.subject, sub }), cell: grid('edit-hours', s.id, inner) };
@@ -1966,6 +1969,7 @@ function editHours(item, k, { pane } = {}) {
   const qLog = [0, 0.5, 1, 1.5, 2, 2.5, 3, 4];
   const other = (kind, cur, quick) => `<label class="field field-inline"><span>Other amount</span><input name="${kind}" type="number" inputmode="decimal" min="0" max="16" step="${kind === 'log' ? 0.25 : 0.5}" value="${quick.includes(cur) ? '' : cur}" placeholder="${kind === 'log' ? 'e.g. 1.75' : 'e.g. 5'}"></label>`;
   const exam = state.plan.exams.some((e) => e.subject === item.subject && e.start === k);
+  const flag = studyFlagOf(item, k);
   openSheet(`
     ${sheetHead(item.subject, longLabel(k) + (exam ? ', exam day' : ''))}
     ${canLog ? `
@@ -1984,6 +1988,7 @@ function editHours(item, k, { pane } = {}) {
       ${hourGrid('plan', v, qPlan)}
       ${other('plan', v, qPlan)}
     </div>
+    ${v > 0 || flag ? flagButton(flag) : ''}
     ${sheetActions('Save')}`,
   (d, which) => {
     if (which === 'q') return;
@@ -2000,6 +2005,7 @@ function editHours(item, k, { pane } = {}) {
         const n = Number(b.dataset.value);
         closeSheet(() => { if (b.dataset.kind === 'log') setLogged(item.subject, k, n); else setHours(item, k, n); });
       }));
+      wireFlag(form, flag, { kind: 'study', ref: item.id, title: `${item.subject}, ${fmtH(v)} h study`, was: k });
     },
   });
 }
