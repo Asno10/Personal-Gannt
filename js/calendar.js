@@ -1,15 +1,11 @@
-// Google Calendar: keeps a "Personal Gantt" calendar in step with the timed
-// items in the sheet, and reads the person's other calendars for display.
-//
-// Every event the app creates carries the item's id in a private extended
-// property (pgId), so an event can always be traced back to its row, a second
-// device never creates a duplicate, and an event whose row was deleted is
-// removed on the next sync.
+// Google Calendar API calls: the Personal Gantt calendar the sync writes to
+// (what goes in it is decided in gantt-export.js), and the person's other
+// calendars, read for display.
 
 // The ?v= must match the one app.js uses, or the browser loads a second copy
 // of sheets.js that has no sign-in token.
-import { accessToken, hasCalendarScope } from './sheets.js?v=22';
-import { addDays } from './parse.js?v=22';
+import { accessToken, hasCalendarScope } from './sheets.js?v=23';
+import { addDays } from './parse.js?v=23';
 
 const API = 'https://www.googleapis.com/calendar/v3';
 
@@ -84,58 +80,6 @@ export async function listEvents(calId, fromKey, toKey, { privateProp } = {}) {
 export const insertEvent = (calId, body) => call(`/calendars/${enc(calId)}/events`, { method: 'POST', body });
 export const patchEvent = (calId, id, body) => call(`/calendars/${enc(calId)}/events/${enc(id)}`, { method: 'PATCH', body, ok404: true });
 export const deleteEvent = (calId, id) => call(`/calendars/${enc(calId)}/events/${enc(id)}`, { method: 'DELETE', ok404: true });
-
-// ---------- Items to events ----------
-
-const DEFAULT_MIN = { task: 15, exam: 120 };
-
-// Whether an item belongs in the calendar: anything with a time, plus every
-// exam and event (as an all-day entry when it has no time). "off" opts out.
-export function wantsEvent(item) {
-  if (item.calendar === 'off' || !item.start || !item.id) return false;
-  if (['study', 'log', 'exercise', 'note'].includes(item.type)) return Boolean(item.time) && item.calendar === 'on';
-  return Boolean(item.time) || item.type === 'exam' || item.type === 'event' || item.calendar === 'on';
-}
-
-function plusMinutes(dateKey, time, minutes) {
-  const [y, m, d] = dateKey.split('-').map(Number);
-  const [hh, mm] = time.split(':').map(Number);
-  const t = new Date(Date.UTC(y, m - 1, d, hh, mm) + minutes * 60000);
-  const p = (n) => String(n).padStart(2, '0');
-  return `${t.getUTCFullYear()}-${p(t.getUTCMonth() + 1)}-${p(t.getUTCDate())}T${p(t.getUTCHours())}:${p(t.getUTCMinutes())}:00`;
-}
-
-export function eventBody(item, timeZone) {
-  const lines = [];
-  const where = [item.area, item.subject].filter((x) => x && !/^(exam|task|event)$/i.test(x)).join(', ');
-  if (where) lines.push(where);
-  if (item.notes) lines.push(item.notes);
-  lines.push('From Personal Gantt. Edit it in the app; changes made here are overwritten.');
-  const body = {
-    summary: item.title || item.subject || 'Untitled',
-    description: lines.join('\n'),
-    extendedProperties: { private: { pgId: item.id } },
-  };
-  if (item.time) {
-    const mins = item.minutes > 0 ? item.minutes : DEFAULT_MIN[item.type] || 60;
-    body.start = { dateTime: `${item.start}T${item.time}:00`, timeZone };
-    body.end = { dateTime: plusMinutes(item.end && item.end > item.start ? item.end : item.start, item.time, mins), timeZone };
-  } else {
-    body.start = { date: item.start };
-    body.end = { date: addDays(item.end || item.start, 1) };
-  }
-  if (item.type === 'exam') body.colorId = '11';
-  return body;
-}
-
-// A short fingerprint of what the event should look like, stored in the row,
-// so the app only touches events whose item has changed.
-export function signature(body) {
-  const s = JSON.stringify([body.summary, body.description, body.start, body.end, body.colorId || '']);
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-  return 'v1:' + (h >>> 0).toString(36);
-}
 
 // Events from other calendars, flattened per day for the views.
 export function toDayEvents(ev, cal) {

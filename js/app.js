@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=22';
-import * as cal from './calendar.js?v=22';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=22';
+import * as api from './sheets.js?v=23';
+import * as cal from './calendar.js?v=23';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=23';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -58,7 +58,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '22';
+const BUILD = '23';
 
 async function checkForUpdate() {
   try {
@@ -200,8 +200,6 @@ function setFields(item, fields, { delay = 600, quiet = false } = {}) {
   flushTimer = setTimeout(flush, delay);
 }
 
-const queueQuiet = (item, fields) => setFields(item, fields, { delay: 1500, quiet: true });
-
 const colOf = (field) => state.plan.header[field];
 
 async function flush() {
@@ -269,13 +267,12 @@ async function addItems(partials, { message } = {}) {
   return rows.map((r) => findItem(r.it.id)).filter(Boolean);
 }
 
-// Deletes an item's row, and its calendar event if it has one.
+// Deletes an item's row; the next calendar sync removes its events.
 async function removeItem(item, { message } = {}) {
   await flush();
   pendingOps++;
   setSync('saving');
   try {
-    if (item.eventId && state.cal.calId && state.cal.status === 'ok') await cal.deleteEvent(state.cal.calId, item.eventId).catch(() => {});
     const { map } = await api.readIdColumn(colLetter(colOf('id')));
     const row = map.get(item.id);
     if (row) await api.deleteRow(state.raw.sheetIds[CONFIG.sheets.items], row);
@@ -586,12 +583,18 @@ function calFailed(e) {
   renderStatus();
 }
 
-// Brings the Personal Gantt calendar in line with the items: creates, moves or
-// removes events as items change, and deletes events whose item is gone.
+// Brings the Personal Gantt calendar in line with the sheet. The rules for
+// what goes in it live in js/gantt-export.js, shared with the Apps Script that
+// runs the same sync every 10 minutes when the app is closed, so the two
+// always agree. Stateless: events are matched by their pgId property and only
+// changed when their content fingerprint differs.
 async function syncCalendar({ force = false } = {}) {
   const c = state.cal;
-  if (c.syncing || !state.plan || !api.hasToken()) return;
+  if (c.syncing || !state.plan || !state.raw || !api.hasToken()) return;
   if (!force && Date.now() - c.lastSync < 60000) return;
+  if (writes.size || inflight || pendingOps) return; // the person is editing; sync after the save
+  const X = globalThis.PGExport;
+  if (!X) return;
   c.syncing = true;
   try {
     if (!c.calendars.length) c.calendars = await cal.listCalendars();
@@ -602,68 +605,21 @@ async function syncCalendar({ force = false } = {}) {
     c.status = 'ok';
     c.message = '';
 
-    const tz = state.plan.settings.timezone?.value || CONFIG.timeZone;
-    let changes = 0;
-    const done = [];
-    const setFields = (item, fields) => done.push([item, fields]);
-    for (const item of state.plan.items) {
-      if (writes.size || inflight || pendingOps) break; // the person is editing; finish next time
-      if (cal.wantsEvent(item)) {
-        const body = cal.eventBody(item, tz);
-        const sig = cal.signature(body);
-        if (item.eventId && item.synced === sig) continue;
-        let ev = null;
-        if (item.eventId) ev = await cal.patchEvent(id, item.eventId, body);
-        if (!ev) {
-          // Another device may have created it a moment ago.
-          const found = await cal.listEvents(id, null, null, { privateProp: `pgId=${item.id}` });
-          ev = found[0] ? await cal.patchEvent(id, found[0].id, body) : null;
-          if (!ev) ev = await cal.insertEvent(id, body);
-          for (const extra of found.slice(1)) await cal.deleteEvent(id, extra.id);
-        }
-        item.eventId = ev.id;
-        item.synced = sig;
-        setFields(item, { event_id: ev.id, synced: sig }, { delay: 1500, quiet: true });
-        changes++;
-      } else if (item.eventId) {
-        await cal.deleteEvent(id, item.eventId);
-        item.eventId = '';
-        item.synced = '';
-        setFields(item, { event_id: '', synced: '' }, { delay: 1500, quiet: true });
-        changes++;
-      }
-    }
-    // Events whose item no longer exists in the sheet.
-    if (state.plan.items.length) {
-      const ids = new Set(state.plan.items.map((i) => i.id));
-      // Only from the chart's first day: rows archived from before it keep their events.
-      const from = [addDays(todayKey(), -120), state.plan.days[0]?.key || ''].sort().at(-1);
-      const mine = await cal.listEvents(id, from, null);
-      for (const ev of mine) {
-        const pg = ev.extendedProperties?.private?.pgId;
-        const startK = (ev.start?.date || ev.start?.dateTime || '').slice(0, 10);
-        if (startK < from) continue;
-        if (pg && !ids.has(pg)) { await cal.deleteEvent(id, ev.id); changes++; }
-      }
-    }
-    // Event ids go back to the sheet in one batch, without touching "updated".
-    for (const [item, fields] of done) queueQuiet(item, fields);
+    const settings = X.parseSettings(state.raw.settings);
+    const tz = settings.timezone || CONFIG.timeZone;
+    const from = X.windowStart(settings, todayKey());
+    const desired = X.desiredEvents(X.parseRows(state.raw.items), { timeZone: tz, from });
+    const plan = X.diff(desired, await cal.listEvents(id, from, null), from);
+    for (const evId of plan.remove) await cal.deleteEvent(id, evId);
+    for (const [evId, body] of plan.patch) await cal.patchEvent(id, evId, body);
+    for (const body of plan.insert) await cal.insertEvent(id, body);
     c.lastSync = Date.now();
-    if (changes) loadCalendarEvents({ force: true }).catch(() => {});
   } catch (e) {
     calFailed(e);
   } finally {
     c.syncing = false;
     renderStatus();
   }
-}
-
-async function saveSetting(key, value) {
-  const s = state.plan.settings[key];
-  const range = s ? api.a1(CONFIG.sheets.settings, `B${s.row}`) : null;
-  if (range) return api.writeCells([{ range, value }]);
-  const rows = state.raw.settings.length;
-  return api.writeCells([{ range: api.a1(CONFIG.sheets.settings, `A${rows + 1}`), value: key }, { range: api.a1(CONFIG.sheets.settings, `B${rows + 1}`), value }]);
 }
 
 // Events from the other calendars, for the days the plan covers.
@@ -1792,7 +1748,7 @@ function renderTasks() {
         <h2 class="group ${label === 'Overdue' ? 'is-alert' : ''}">${label}<span>${list.length}</span></h2>
         <ul class="task-list">${list.map((t) => taskRow(t)).join('')}</ul>
       </section>`).join('') || `<p class="empty">${f === 'done' ? 'Nothing marked done yet.' : 'Nothing to do. Add a task above.'}</p>`}
-    <p class="hint">Tasks live in the Items table of your sheet. Tasks with a time also appear in your Personal Gantt calendar.</p>`;
+    <p class="hint">Tasks live in the Items table of your sheet and also appear in your Personal Gantt calendar.</p>`;
 }
 
 // ---------- Actions ----------
@@ -2127,7 +2083,7 @@ function taskForm(t, date) {
       <label class="field"><span>Time (optional)</span><input name="time" type="time" value="${esc(t?.time || '')}"></label>
       <label class="field"><span>${isRead ? 'Hours' : 'Minutes'}</span><input name="${isRead ? 'hours' : 'minutes'}" type="number" inputmode="decimal" min="0" step="${isRead ? 0.5 : 5}" value="${esc(isRead ? (t?.hours || '') : (t?.minutes || ''))}" placeholder="${isRead ? '1' : '15'}"></label>
     </div>
-    <p class="dlg-hint">${t?.calendar === 'off' ? 'Not synced to the calendar.' : 'With a time, it also goes in your Personal Gantt calendar.'}</p>
+    <p class="dlg-hint">${t?.calendar === 'off' ? 'Not synced to the calendar.' : 'It also goes in your Personal Gantt calendar.'}</p>
     <p class="dlg-label">Priority</p>
     <div class="choice-row">
       ${['', 'P1', 'P2', 'P3'].map((p) => `<button type="button" class="choice ${st.prio === p ? 'is-on' : ''}" data-set="prio" data-value="${p}">${p || 'None'}</button>`).join('')}
