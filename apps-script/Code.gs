@@ -279,15 +279,15 @@
 // sheet every 10 minutes, whether or not the app is open.
 //
 // Install (once): in the sheet, Extensions > Apps Script, replace the code
-// with this whole file, save, choose "setup" in the function menu, Run, and
-// allow access. After that it runs on its own. "Personal Gantt > Sync
-// calendar now" in the sheet's menu bar runs it on demand.
+// with this whole file and save. In the left bar, Services (+), choose
+// "Google Calendar API" and Add (it must be named Calendar). Then choose
+// "setup" in the function menu, Run, and allow access. After that it runs on
+// its own. "Personal Gantt > Sync calendar now" in the sheet runs it on demand.
 // ---------------------------------------------------------------------------
 
 var PG_ITEMS = 'Items';
 var PG_SETTINGS = 'Settings';
 var PG_CAL_NAME = 'Personal Gantt';
-var PG_API = 'https://www.googleapis.com/calendar/v3';
 
 function setup() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
@@ -325,10 +325,9 @@ function syncPersonalGantt() {
     var existing = pgListEvents_(calId, from);
     var plan = PGExport.diff(desired, existing, from);
 
-    var base = PG_API + '/calendars/' + encodeURIComponent(calId) + '/events';
-    plan.remove.forEach(function (id) { pgCall_('delete', base + '/' + encodeURIComponent(id)); });
-    plan.patch.forEach(function (p) { pgCall_('patch', base + '/' + encodeURIComponent(p[0]), p[1]); });
-    plan.insert.forEach(function (b) { pgCall_('post', base, b); });
+    plan.remove.forEach(function (id) { pgCall_(function () { Calendar.Events.remove(calId, id); }, true); });
+    plan.patch.forEach(function (p) { pgCall_(function () { Calendar.Events.patch(p[1], calId, p[0]); }); });
+    plan.insert.forEach(function (b) { pgCall_(function () { Calendar.Events.insert(b, calId); }); });
     return { inserted: plan.insert.length, patched: plan.patch.length, removed: plan.remove.length };
   } finally {
     lock.releaseLock();
@@ -355,29 +354,29 @@ function pgListEvents_(calId, from) {
   var out = [];
   var page = '';
   do {
-    var url = PG_API + '/calendars/' + encodeURIComponent(calId) + '/events?singleEvents=true&showDeleted=false&maxResults=2500'
-      + '&timeMin=' + encodeURIComponent(from + 'T00:00:00Z') + (page ? '&pageToken=' + encodeURIComponent(page) : '');
-    var r = pgCall_('get', url);
+    var opts = { singleEvents: true, showDeleted: false, maxResults: 2500, timeMin: from + 'T00:00:00Z' };
+    if (page) opts.pageToken = page;
+    var r = pgCall_(function () { return Calendar.Events.list(calId, opts); });
     out = out.concat(r.items || []);
     page = r.nextPageToken || '';
   } while (page);
   return out;
 }
 
-function pgCall_(method, url, body) {
-  for (var attempt = 0; attempt < 4; attempt++) {
-    var res = UrlFetchApp.fetch(url, {
-      method: method,
-      contentType: 'application/json',
-      payload: body ? JSON.stringify(body) : undefined,
-      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-      muteHttpExceptions: true,
-    });
-    var code = res.getResponseCode();
-    if (code >= 200 && code < 300) return code === 204 || !res.getContentText() ? {} : JSON.parse(res.getContentText());
-    if (method === 'delete' && (code === 404 || code === 410)) return {};
-    if (code === 403 || code === 429 || code >= 500) { Utilities.sleep(1000 * Math.pow(2, attempt)); continue; }
-    throw new Error('Google Calendar ' + code + ': ' + res.getContentText().slice(0, 300));
+// Runs one Calendar request; waits and retries only when Google asks to slow
+// down. Any other error is reported as it is.
+function pgCall_(fn, okIfGone) {
+  if (typeof Calendar === 'undefined') {
+    throw new Error('The Google Calendar service is not added. In the Apps Script editor: Services (+), Google Calendar API, Add. Then run setup again.');
   }
-  throw new Error('Google Calendar kept refusing requests; will retry on the next run.');
+  for (var attempt = 0; ; attempt++) {
+    try {
+      return fn() || {};
+    } catch (e) {
+      var msg = String(e && e.message || e);
+      if (okIfGone && /not ?found|deleted|404|410/i.test(msg)) return {};
+      if (attempt < 4 && /rate ?limit|quota|backend|503|500|try again/i.test(msg)) { Utilities.sleep(1000 * Math.pow(2, attempt)); continue; }
+      throw new Error('Google Calendar: ' + msg);
+    }
+  }
 }
