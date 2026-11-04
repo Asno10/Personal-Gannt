@@ -1091,3 +1091,22 @@ button.event { width: 100%; text-align: left; }
 #day-sections > .block.is-settling { z-index: 5; transition: transform 0.44s var(--spring, ease), box-shadow 0.35s ease; }
 .day-hint { text-align: center; margin: 4px 0 8px; }
 @media (prefers-reduced-motion: reduce) { #day-sections > .block, #day-sections > .block.is-settling, .day-sections.is-sorting > .block:not(.is-lifted) { transition: none; } }
+
+/* Timeline sections fold with an animation (build 34). Both columns hold the
+   same fold with rows of the same heights, so they move in step. */
+.tl-fold .at-inner { min-height: 0; }
+.tn.tl-section > button svg { transition: transform 0.3s var(--ease-out, ease); }
+.tn.tl-section.is-shut > button svg { transform: rotate(-90deg); }
+.gr.tl-section .tl-pv { position: absolute; inset: 0; opacity: 0; transition: opacity 0.25s ease; pointer-events: none; }
+.gr.tl-section.is-shut .tl-pv { opacity: 1; transition: opacity 0.3s ease 0.12s; }
+@media (prefers-reduced-motion: reduce) { .tn.tl-section > button svg, .gr.tl-section .tl-pv { transition: none; } }
+
+/* Rearranging Timeline sections (build 34): the held section's names and day
+   rows lift together, tinted, above the others. */
+.tlx-names, .tlx-grid .tlx-in { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.tlx-names .tn, .tlx-names .tl-fold, .tlx-grid .gr, .tlx-grid .tl-fold { position: relative; }
+.tlx.is-sorting :is(.tn, .gr, .tl-fold):not(.is-lifted) { transition: transform 0.32s var(--ease-out, ease); }
+.tlx :is(.tn, .gr).is-pressing, .tlx .tl-fold.is-pressing { opacity: 0.7; transition: opacity 0.38s ease; }
+.tlx :is(.tn, .gr, .tl-fold).is-lifted { z-index: 7; background: color-mix(in srgb, var(--accent) 9%, var(--paper)); box-shadow: 0 10px 22px -10px rgb(15 25 40 / 0.35); }
+.tlx :is(.tn, .gr, .tl-fold).is-settling { z-index: 7; transition: transform 0.44s var(--spring, ease), background 0.4s ease, box-shadow 0.35s ease; }
+@media (prefers-reduced-motion: reduce) { .tlx.is-sorting :is(.tn, .gr, .tl-fold), .tlx :is(.tn, .gr, .tl-fold).is-settling { transition: none; } }

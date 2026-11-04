@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=33';
-import * as cal from './calendar.js?v=33';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=33';
+import * as api from './sheets.js?v=34';
+import * as cal from './calendar.js?v=34';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=34';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -56,6 +56,8 @@ const state = {
   dayClosed: new Set(JSON.parse(store.get('pg.dayClosed') || '[]')),
   // The order of the Day view sections, as arranged by dragging.
   dayOrder: JSON.parse(store.get('pg.dayOrder') || '[]'),
+  // The order of the Timeline sections, as arranged by dragging.
+  tlOrder: JSON.parse(store.get('pg.tlOrder') || '[]'),
   dragging: false,
 };
 
@@ -68,7 +70,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '33';
+const BUILD = '34';
 
 async function checkForUpdate() {
   try {
@@ -1655,25 +1657,30 @@ function renderTimeline() {
   const names = [];
   const rows = [];
   // kind: row (48px), tall (60px, two-line names), sec (44px) or more (40px), the same in both columns.
-  const add = ({ kind = 'row', cls = '', color = '', name, cell = '' }) => {
+  const add = ({ kind = 'row', cls = '', color = '', name, cell = '', attr = '' }) => {
     const st = color ? ` style="--c:${color}"` : '';
-    names.push(`<div class="tn tk-${kind} ${cls}"${st}>${name}</div>`);
-    rows.push(`<div class="gr tk-${kind} ${cls}"${st}${cell}</div>`);
+    names.push(`<div class="tn tk-${kind} ${cls}"${st}${attr}>${name}</div>`);
+    rows.push(`<div class="gr tk-${kind} ${cls}"${st}${attr}${cell}</div>`);
   };
+  // Wraps rows in the same fold in both columns, so they open and shut together.
+  const both = (html) => { names.push(html); rows.push(html); };
   const nameHtml = ({ name, sub = '', action = '', flag = null }) => `${action ? `<button ${action}>` : '<div class="tl-name-in">'}<span class="tl-label">${esc(name)}${flagMark(flag)}</span>${sub ? `<span class="tl-sub">${esc(sub)}</span>` : ''}${action ? '</button>' : '</div>'}`;
   // cell: what a tap on an empty day does, then the filled days.
   const grid = (action, id, inner) => `${action ? ` data-action="grid-cell" data-cell="${action}"${id ? ` data-id="${id}"` : ''}` : ''}>${inner}`;
 
-  const section = (id, title, meta, list, preview) => {
+  // A section's rows are always drawn, inside a fold that animates open and
+  // shut; the heading row shows a preview of the days while it is shut.
+  const drawSection = (id, title, meta, list, preview) => {
     if (!list.length) return;
     const shut = state.collapsed.has(id);
-    const entering = state.justOpened === id ? 'is-entering' : '';
     add({
-      kind: 'sec', cls: `tl-section ${shut ? 'is-shut' : ''}`,
-      name: `<button data-action="toggle-section" data-key="${id}" aria-expanded="${!shut}">${ICON[shut ? 'right' : 'down']}<span>${esc(title)}</span><span class="tl-count">${esc(meta)}</span></button>`,
-      cell: grid(shut ? 'open-day' : '', '', shut && preview ? days.map((d) => at(d.key, preview(d.key))).join('') : ''),
+      kind: 'sec', cls: `tl-section ${shut ? 'is-shut' : ''}`, attr: ` data-sec="${id}"`,
+      name: `<button data-action="toggle-section" data-key="${id}" aria-expanded="${!shut}">${ICON.down}<span>${esc(title)}</span><span class="tl-count">${esc(meta)}</span></button>`,
+      cell: grid('open-day', '', preview ? `<div class="tl-pv">${days.map((d) => at(d.key, preview(d.key))).join('')}</div>` : ''),
     });
-    if (!shut) for (const r of list) add({ ...r, cls: `${r.cls || ''} ${entering}` });
+    both(`<div class="at-panel tl-fold ${shut ? '' : 'is-open'}" data-fold="${id}" ${shut ? 'inert' : ''}><div class="at-inner">`);
+    for (const r of list) add(r);
+    both('</div></div>');
   };
 
   // Study: one row per subject, with its exams at the end of the row. Deadlines
@@ -1835,6 +1842,9 @@ function renderTimeline() {
     },
   };
 
+  // Sections are drawn in the order arranged by dragging.
+  const pendingSections = [];
+  const section = (...args) => pendingSections.push(args);
   section('study', 'Study', `${fmtH(studyTotal)} h`, [...study, ...lonelyExams], preview.study);
   section('reading', 'Reading', `${readOpen}`, readRows, preview.reading);
   section('tasks', 'Tasks', `${open.length} open`, taskRows, preview.tasks);
@@ -1842,6 +1852,8 @@ function renderTimeline() {
   section('calendar', 'Google Calendar', '', calRows, preview.calendar);
   section('exercise', 'Exercise', '', exerciseRows, preview.exercise);
   section('other', 'Other', plural(otherRows.length, 'item'), otherRows, preview.other);
+  const tlOrder = fullTlOrder();
+  pendingSections.sort((a, b) => tlOrder.indexOf(a[0]) - tlOrder.indexOf(b[0])).forEach((args) => drawSection(...args));
 
   return `
     <div class="tl-title-row">
@@ -1866,7 +1878,7 @@ function renderTimeline() {
         <div class="tlx-grid" id="tl-scroll"><div class="tlx-in">${stripes}${rows.join('')}</div></div>
       </div>
     </div>
-    <p class="tl-tip">Tap a study day to log what you studied or change the plan, a task day to plan, move or finish it, or a date to open that day. The number under each date is that day's planned study total.</p>`;
+    <p class="tl-tip">Press and hold a section's name, then drag it to move the section. Tap a study day to log what you studied or change the plan, a task day to plan, move or finish it, or a date to open that day. The number under each date is that day's planned study total.</p>`;
 }
 
 // The timeline is two parts: the date row, pinned under the top bar, and the
@@ -2573,21 +2585,23 @@ function accountMenu() {
   });
 }
 
-// ---------- Day sections: press, hold and drag to reorder ----------
-// Holding a section for a moment makes it sink slightly; then it lifts with a
-// shadow and follows the finger exactly, the others glide out of its way, the
-// page scrolls when the finger nears the top or bottom, and on release it
-// springs into its new place. A quick tap still folds it; a swipe still
-// scrolls. The order is kept per device.
+// ---------- Sections: press, hold and drag to reorder ----------
+// Works on the Day view's sections and on the Timeline's sections. Holding a
+// section for a moment makes it sink slightly; then it lifts and follows the
+// finger exactly, the others glide out of its way, the page scrolls when the
+// finger nears the top or bottom, and on release it springs into its new
+// place. A quick tap still does what it did; a swipe still scrolls. The order
+// is kept per device. A Timeline section is several elements (its heading and
+// rows in the names column and again in the day grid), moved as one piece.
 
 const DAY_KEYS = ['study', 'reading', 'tasks', 'calendar', 'notes', 'exercise', 'other'];
+const TL_KEYS = ['study', 'reading', 'tasks', 'events', 'calendar', 'exercise', 'other'];
 const HOLD_MS = 380;
 const SLOP = 8;
 
-function fullDayOrder() {
-  const saved = state.dayOrder.filter((k) => DAY_KEYS.includes(k));
-  return [...saved, ...DAY_KEYS.filter((k) => !saved.includes(k))];
-}
+const fullOrder = (saved, keys) => { const s = saved.filter((k) => keys.includes(k)); return [...s, ...keys.filter((k) => !s.includes(k))]; };
+const fullDayOrder = () => fullOrder(state.dayOrder, DAY_KEYS);
+const fullTlOrder = () => fullOrder(state.tlOrder, TL_KEYS);
 
 function orderDaySections() {
   const box = $('#day-sections');
@@ -2598,48 +2612,117 @@ function orderDaySections() {
     .forEach((n) => box.appendChild(n));
 }
 
-// Sections hidden on this day (no reading, say) keep their place in the order.
-function saveDayOrder(visible) {
-  const order = fullDayOrder();
+// Sections missing on screen (no reading that day, say) keep their place.
+function mergeOrder(order, visible) {
   const slots = order.map((k, i) => (visible.includes(k) ? i : -1)).filter((i) => i >= 0);
   slots.forEach((slot, j) => { order[slot] = visible[j]; });
-  state.dayOrder = order;
-  store.set('pg.dayOrder', JSON.stringify(order));
+  return order;
 }
+
+// The two kinds of list that can be rearranged.
+const SORTS = {
+  day: {
+    find: (target) => target.closest?.('#day-sections > .block'),
+    items() {
+      const box = $('#day-sections');
+      return [...box.children].filter((n) => n.dataset.section).map((el) => ({ key: el.dataset.section, els: [el], anchor: el }));
+    },
+    gap: (item) => parseFloat(getComputedStyle(item.anchor).marginBottom) || 0,
+    lift: 'scale(1.03)',
+    box: () => $('#day-sections'),
+    commit(keys) {
+      const box = $('#day-sections');
+      for (const k of keys) { const el = box.querySelector(`:scope > [data-section="${k}"]`); if (el) box.appendChild(el); }
+      state.dayOrder = mergeOrder(fullDayOrder(), keys);
+      store.set('pg.dayOrder', JSON.stringify(state.dayOrder));
+    },
+  },
+  tl: {
+    // Held by a name in the left column: a section heading or one of its rows.
+    find(target) {
+      const tn = target.closest?.('.tlx-names .tn');
+      if (!tn) return null;
+      const key = tn.dataset.sec || tn.closest('.tl-fold')?.dataset.fold;
+      return key ? $(`.tlx-names .tn.tl-section[data-sec="${key}"]`) : null;
+    },
+    items() {
+      return $$('.tlx-names .tn.tl-section').map((head) => {
+        const key = head.dataset.sec;
+        const gHead = $(`.tlx-grid .gr.tl-section[data-sec="${key}"]`);
+        const els = [head, head.nextElementSibling, gHead, gHead?.nextElementSibling].filter(Boolean);
+        return { key, els, anchor: head, extra: head.nextElementSibling };
+      });
+    },
+    gap: () => 0,
+    lift: '',
+    box: () => $('.tlx'),
+    commit(keys) {
+      const names = $('.tlx-names');
+      const grid = $('.tlx-grid .tlx-in');
+      for (const k of keys) {
+        const head = names.querySelector(`.tn.tl-section[data-sec="${k}"]`);
+        const gHead = grid.querySelector(`.gr.tl-section[data-sec="${k}"]`);
+        if (head) { const f = head.nextElementSibling; names.appendChild(head); if (f) names.appendChild(f); }
+        if (gHead) { const f = gHead.nextElementSibling; grid.appendChild(gHead); if (f) grid.appendChild(f); }
+      }
+      state.tlOrder = mergeOrder(fullTlOrder(), keys);
+      store.set('pg.tlOrder', JSON.stringify(state.tlOrder));
+    },
+  },
+};
 
 let hold = null;
 let drag = null;
 let swallowClickUntil = 0;
 
-function holdStart(sec, x, y) {
+function findSortable(target) {
+  if (target.closest?.('input, textarea, select, label')) return null;
+  for (const kind of Object.keys(SORTS)) {
+    const el = SORTS[kind].find(target);
+    if (el) return { kind, el };
+  }
+  return null;
+}
+
+function holdStart(found, x, y) {
   if (drag) return;
   holdCancel();
-  hold = { sec, x, y, timer: setTimeout(() => { const h = hold; hold = null; if (h) dragStart(h.sec, h.y); }, HOLD_MS) };
-  sec.classList.add('is-pressing');
+  const sort = SORTS[found.kind];
+  const item = sort.items().find((it) => it.anchor === found.el);
+  if (!item) return;
+  hold = { ...found, item, x, y, timer: setTimeout(() => { const h = hold; hold = null; if (h) dragStart(h.kind, h.item.key, h.y); }, HOLD_MS) };
+  item.els.forEach((el) => el.classList.add('is-pressing'));
 }
 
 function holdCancel() {
   if (!hold) return;
   clearTimeout(hold.timer);
-  hold.sec.classList.remove('is-pressing');
+  hold.item.els.forEach((el) => el.classList.remove('is-pressing'));
   hold = null;
 }
 
-function dragStart(sec, y) {
-  const box = sec.parentElement;
-  const page = sec.closest('.page');
-  const els = [...box.children].filter((n) => n.dataset.section);
-  if (els.length < 2) { sec.classList.remove('is-pressing'); return; }
+// Where an item sits in the page, measured once when the drag starts.
+function measure(item, scroll) {
+  const r = item.anchor.getBoundingClientRect();
+  const h = r.height + (item.extra ? item.extra.getBoundingClientRect().height : 0);
+  return { ...item, top: r.top + scroll, h };
+}
+
+function dragStart(kind, key, y) {
+  const sort = SORTS[kind];
+  const list = sort.items();
+  const me = list.find((it) => it.key === key);
+  list.forEach((it) => it.els.forEach((el) => el.classList.remove('is-pressing')));
+  if (!me || list.length < 2) return;
+  const page = me.anchor.closest('.page');
   const scroll = page.scrollTop;
-  const items = els.map((el) => { const r = el.getBoundingClientRect(); return { el, top: r.top + scroll, h: r.height }; });
-  const from = els.indexOf(sec);
-  const gap = parseFloat(getComputedStyle(sec).marginBottom) || 0;
-  drag = { sec, box, page, items, from, to: from, gap, startY: y, y, startScroll: scroll, raf: 0 };
+  const items = list.map((it) => measure(it, scroll));
+  const from = list.indexOf(me);
+  drag = { kind, sort, items, from, to: from, gap: sort.gap(me), page, startY: y, y, startScroll: scroll, raf: 0, dy: 0 };
   state.dragging = true;
   swallowClickUntil = Infinity;
-  sec.classList.remove('is-pressing');
-  box.classList.add('is-sorting');
-  sec.classList.add('is-lifted');
+  sort.box().classList.add('is-sorting');
+  items[from].els.forEach((el) => el.classList.add('is-lifted'));
   try { navigator.vibrate?.(12); } catch {}
   dragUpdate();
   drag.raf = requestAnimationFrame(autoScroll);
@@ -2670,17 +2753,17 @@ function dragUpdate() {
     let shift = 0;
     if (i < d.from && mid < c) { shift = step; to--; }
     if (i > d.from && mid > c) { shift = -step; to++; }
-    it.el.style.transform = shift ? `translateY(${shift}px)` : '';
+    it.els.forEach((el) => { el.style.transform = shift ? `translateY(${shift}px)` : ''; });
   });
   if (to !== d.to) { d.to = to; try { navigator.vibrate?.(6); } catch {} }
-  d.sec.style.transform = `translateY(${dy}px) scale(1.03)`;
+  me.els.forEach((el) => { el.style.transform = `translateY(${dy}px) ${d.sort.lift}`; });
 }
 
 // Scrolls the page while the finger is near its top or bottom edge.
 function autoScroll() {
   if (!drag) return;
   const r = drag.page.getBoundingClientRect();
-  const top = r.top + (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--bar-h')) || 56) + 40;
+  const top = r.top + (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--bar-h')) || 56) + (drag.kind === 'tl' ? 90 : 40);
   const bottom = r.bottom - 120;
   let v = 0;
   if (drag.y < top) v = -Math.min(18, (top - drag.y) / 4);
@@ -2701,36 +2784,32 @@ function dragEnd() {
   if (!d) return;
   cancelAnimationFrame(d.raf);
   drag = null;
-  const before = d.sec.getBoundingClientRect().top;
+  const me = d.items[d.from];
+  const before = me.anchor.getBoundingClientRect().top;
   // Put the section in its new place, keeping everything where it is on screen.
-  d.box.classList.remove('is-sorting');
-  d.items.forEach((it) => { it.el.style.transition = 'none'; it.el.style.transform = ''; });
-  const others = d.items.filter((_, i) => i !== d.from).map((it) => it.el);
-  d.box.insertBefore(d.sec, others[d.to] || others.at(-1)?.nextSibling || null);
-  const after = d.sec.getBoundingClientRect().top;
-  d.sec.style.transform = `translateY(${before - after}px) scale(1.03)`;
-  void d.sec.offsetHeight;
-  d.items.forEach((it) => { it.el.style.transition = ''; });
+  d.sort.box().classList.remove('is-sorting');
+  d.items.forEach((it) => it.els.forEach((el) => { el.style.transition = 'none'; el.style.transform = ''; }));
+  const keys = d.items.map((it) => it.key);
+  keys.splice(d.to, 0, keys.splice(d.from, 1)[0]);
+  if (d.to !== d.from) d.sort.commit(keys);
+  const delta = before - me.anchor.getBoundingClientRect().top;
+  me.els.forEach((el) => { el.style.transform = `translateY(${delta}px) ${d.sort.lift}`; });
+  void me.anchor.offsetHeight;
+  d.items.forEach((it) => it.els.forEach((el) => { el.style.transition = ''; }));
   // Then let it settle with a spring.
-  d.sec.classList.add('is-settling');
-  d.sec.classList.remove('is-lifted');
-  d.sec.style.transform = '';
-  const done = () => {
-    d.sec.classList.remove('is-settling');
+  me.els.forEach((el) => { el.classList.add('is-settling'); el.classList.remove('is-lifted'); el.style.transform = ''; });
+  setTimeout(() => {
+    me.els.forEach((el) => el.classList.remove('is-settling'));
     state.dragging = false;
     if (state.dirty && !$('#dialog')?.open) { state.dirty = false; render(); }
-  };
-  setTimeout(done, reducedMotion() ? 0 : 450);
+  }, reducedMotion() ? 0 : 450);
   swallowClickUntil = performance.now() + 350;
-  if (d.to !== d.from) saveDayOrder([...d.box.children].filter((n) => n.dataset.section).map((n) => n.dataset.section));
 }
-
-const daySection = (target) => (target.closest?.('input, textarea, select, label') ? null : target.closest?.('#day-sections > .block'));
 
 document.addEventListener('touchstart', (ev) => {
   if (ev.touches.length !== 1) { holdCancel(); return; }
-  const sec = daySection(ev.target);
-  if (sec) holdStart(sec, ev.touches[0].clientX, ev.touches[0].clientY);
+  const found = findSortable(ev.target);
+  if (found) holdStart(found, ev.touches[0].clientX, ev.touches[0].clientY);
 }, { passive: true });
 document.addEventListener('touchmove', (ev) => {
   const t = ev.touches[0];
@@ -2746,8 +2825,8 @@ document.addEventListener('touchcancel', () => { holdCancel(); dragEnd(); }, { p
 // The same with a mouse or trackpad.
 document.addEventListener('mousedown', (ev) => {
   if (ev.button !== 0 || ev.sourceCapabilities?.firesTouchEvents) return;
-  const sec = daySection(ev.target);
-  if (sec) holdStart(sec, ev.clientX, ev.clientY);
+  const found = findSortable(ev.target);
+  if (found) holdStart(found, ev.clientX, ev.clientY);
 });
 window.addEventListener('mousemove', (ev) => {
   if (hold && (Math.abs(ev.clientX - hold.x) > SLOP || Math.abs(ev.clientY - hold.y) > SLOP)) holdCancel();
@@ -2864,13 +2943,14 @@ document.addEventListener('click', (ev) => {
       return render();
     case 'toggle-done-tl': state.tlShowDone = !state.tlShowDone; return render();
     case 'toggle-section': {
+      // Changed in place, not redrawn, so both columns animate together.
       const id = el.dataset.key;
-      const opening = state.collapsed.has(id);
-      if (opening) state.collapsed.delete(id); else state.collapsed.add(id);
+      const open = state.collapsed.has(id);
+      if (open) state.collapsed.delete(id); else state.collapsed.add(id);
       store.set('pg.tlCollapsed', JSON.stringify([...state.collapsed]));
-      state.justOpened = opening ? id : null;
-      render();
-      state.justOpened = null;
+      el.setAttribute('aria-expanded', String(open));
+      $$(`#view-timeline .tl-section[data-sec="${id}"]`).forEach((r) => r.classList.toggle('is-shut', !open));
+      $$(`#view-timeline .tl-fold[data-fold="${id}"]`).forEach((f) => setFold(f, open));
       return;
     }
     case 'undo': {
