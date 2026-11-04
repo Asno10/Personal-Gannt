@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=23';
-import * as cal from './calendar.js?v=23';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=23';
+import * as api from './sheets.js?v=24';
+import * as cal from './calendar.js?v=24';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=24';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -58,7 +58,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '23';
+const BUILD = '24';
 
 async function checkForUpdate() {
   try {
@@ -73,10 +73,27 @@ async function checkForUpdate() {
   } catch {}
 }
 
-function boot() {
+async function boot() {
   checkForUpdate();
   if (!api.configured()) return renderSetup();
+  // Signs in on its own when this device has a saved token or is set up to
+  // get one from the sheet's Apps Script; otherwise shows the sign-in button.
+  if (api.hasToken() || api.canStaySignedIn()) {
+    app.innerHTML = `<main class="gate"><p class="loading">Signing in</p></main>`;
+    if (await api.ensureToken()) {
+      store.set('pg.signedIn', '1');
+      return refresh({ first: true });
+    }
+  }
   renderSignIn();
+}
+
+// The Settings tab holds the address and key of the Apps Script web app that
+// keeps the app signed in ("Personal Gantt > Connect the app" in the sheet).
+// Reading them after a load sets this device up, and picks up a reset key.
+function learnStaySignedIn(settingsRows) {
+  const get = (k) => (settingsRows || []).find((r) => String(r?.[0] || '').trim() === k)?.[1];
+  api.rememberStaySignedIn(get('app_token_url'), get('app_token_key'));
 }
 
 function renderSetup() {
@@ -130,6 +147,7 @@ async function refresh({ first = false } = {}) {
     lastRawJson = json;
     state.raw = raw;
     state.loadedAt = Date.now();
+    learnStaySignedIn(raw.settings);
     if (changed || first) {
       state.plan = parseItems(raw.items, raw.settings, todayKey());
       state.flags = parseFlags(raw.reschedule);
@@ -2214,7 +2232,7 @@ function accountMenu() {
     : c.status === 'error' ? `Calendar sync failed: ${esc(c.message)}` : 'Connecting to Google Calendar.';
   openSheet(`
     ${sheetHead('Account')}
-    <p class="dlg-sub">Signed in to Google for this session. The app reads and writes the Items table of your sheet directly and stores none of its data.</p>
+    <p class="dlg-sub">${api.canStaySignedIn() ? 'Stays signed in on this device through the sheet\'s Apps Script.' : 'Signed in to Google for this session. To stay signed in, run <b>Personal Gantt &gt; Connect the app</b> in the sheet (see the README).'} The app reads and writes the Items table of your sheet directly and stores none of its data.</p>
     <p class="dlg-label">Google Calendar</p>
     <p class="dlg-sub">${status}</p>
     ${others.length ? `
@@ -2370,8 +2388,10 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { flush(); return; }
   checkForUpdate();
   if (!state.plan) return;
-  if (!api.hasToken()) return renderSignIn('Your session ended. Sign in again to continue.');
-  if (Date.now() - state.loadedAt > 120000 && !writes.size && !inflight) refresh();
+  api.ensureToken().then((ok) => {
+    if (!ok) return renderSignIn('Your session ended. Sign in again to continue.');
+    if (Date.now() - state.loadedAt > 120000 && !writes.size && !inflight) refresh();
+  });
 });
 
 window.addEventListener('beforeunload', (ev) => {

@@ -10,6 +10,17 @@ The site holds code only. The sheet and calendars are read in the browser after 
 2. Put the client ID in `config.js`.
 3. Publish with GitHub Pages from the `main` branch, root folder.
 
+## Staying signed in
+
+On its own, a sign-in made in the browser lasts an hour and needs a tap to renew. To keep the app signed in, the sheet's Apps Script (below) also works as a small web app that runs as you and hands the app a fresh Google token when it asks:
+
+1. In the Apps Script editor, add the **Google Sheets API** under **Services (+)** (keep the name `Sheets`), next to the Calendar API.
+2. **Deploy > New deployment**, type **Web app**, Execute as **Me**, Who has access **Anyone**, then **Deploy** and allow access.
+3. In the sheet, **Personal Gantt > Connect the app**. It writes the web app address and a key to the Settings tab (`app_token_url`, `app_token_key`).
+4. Open the app and sign in once on each device. From then on it signs itself in when opened and renews its token in the background, with no sign-in screen.
+
+Every request must carry the key. Anyone holding it can read and change your sheets and calendars, so do not share the Settings tab. **Personal Gantt > Reset app access** replaces the key, which signs every device out until it signs in once more; **Sign out** in the app forgets the key on that device. After pasting a new `Code.gs`, the web app keeps running its deployed version; only changes to `doGet` need **Deploy > Manage deployments > Edit > New version**.
+
 ## The database
 
 The **Items** tab is the single source of truth: one row per item, with columns found by their header names.

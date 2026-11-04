@@ -1,5 +1,15 @@
-// Google sign-in (Google Identity Services token flow) and the Sheets API calls.
-// The access token lives in memory only; nothing from the sheet is stored.
+// Google sign-in and the Sheets API calls.
+//
+// Two ways to get an access token:
+// 1. Google Identity Services (the "Sign in with Google" button). Its tokens
+//    last an hour and cannot be renewed without another tap.
+// 2. The sheet's Apps Script, deployed as a web app that runs as the owner
+//    (apps-script/sync.gs, doGet). It hands out a fresh token on request, so
+//    the app signs itself in and never shows the sign-in screen. The web app
+//    address and its key are read from the Settings tab after one normal
+//    sign-in on each device, and kept in this browser.
+// The current token is kept in this browser until it expires, so reopening
+// the app does not need a new one. Nothing from the sheet is stored.
 
 import { CONFIG } from '../config.js';
 
@@ -14,6 +24,93 @@ let pending = null;
 let calendarGranted = false;
 
 export class AuthError extends Error {}
+
+const ls = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+const K_TOKEN = 'pg.token';
+const K_URL = 'pg.tokenUrl';
+const K_KEY = 'pg.tokenKey';
+// How long a token from the Apps Script is trusted before asking for a new
+// one. Google does not say how long it has left; a 401 also triggers a renewal.
+const SCRIPT_TOKEN_MS = 15 * 60 * 1000;
+const WEB_APP_URL = /^https:\/\/script\.google\.com\/[\w\/.-]+\/exec$/;
+
+function keepToken() {
+  ls.set(K_TOKEN, JSON.stringify({ t: token, exp: tokenExpiry, cal: calendarGranted }));
+}
+
+// A token saved by an earlier visit, if it has not expired.
+(function restoreToken() {
+  try {
+    const v = JSON.parse(ls.get(K_TOKEN) || 'null');
+    if (v && v.t && Date.now() < v.exp) { token = v.t; tokenExpiry = v.exp; calendarGranted = Boolean(v.cal); }
+  } catch {}
+})();
+
+export const canStaySignedIn = () => Boolean(ls.get(K_URL) && ls.get(K_KEY));
+
+// Saves the web app address and key found in Settings. Returns true if they changed.
+export function rememberStaySignedIn(url, key) {
+  url = String(url || '').trim();
+  key = String(key || '').trim();
+  if (!WEB_APP_URL.test(url) || key.length < 32) return false;
+  if (ls.get(K_URL) === url && ls.get(K_KEY) === key) return false;
+  ls.set(K_URL, url);
+  ls.set(K_KEY, key);
+  return true;
+}
+
+function forgetStaySignedIn() {
+  ls.del(K_URL);
+  ls.del(K_KEY);
+}
+
+let renewing = null;
+
+// Gets a fresh token from the Apps Script web app: no popup and no tap.
+// Resolves to true on success, false if this device is not set up for it or
+// the request failed. A rejected key is forgotten (it was reset in the sheet).
+export function renewToken() {
+  if (!canStaySignedIn()) return Promise.resolve(false);
+  if (renewing) return renewing;
+  const url = ls.get(K_URL);
+  const key = ls.get(K_KEY);
+  renewing = (async () => {
+    try {
+      const res = await fetch(`${url}?key=${encodeURIComponent(key)}&t=${Date.now()}`, { cache: 'no-store', redirect: 'follow' });
+      if (!res.ok) return false;
+      const body = await res.json();
+      if (body?.error === 'denied') { forgetStaySignedIn(); return false; }
+      if (!body?.token) return false;
+      token = body.token;
+      tokenExpiry = Date.now() + SCRIPT_TOKEN_MS;
+      calendarGranted = true;
+      keepToken();
+      return true;
+    } catch {
+      return false;
+    } finally {
+      renewing = null;
+    }
+  })();
+  return renewing;
+}
+
+// A usable token: the current one, or a renewed one. False if neither.
+export async function ensureToken() {
+  return hasToken() || renewToken();
+}
+
+// After a 401: drops the token and tries once to get a new one.
+export async function renewAfterRejection() {
+  token = null;
+  tokenExpiry = 0;
+  ls.del(K_TOKEN);
+  return renewToken();
+}
 
 export const configured = () => Boolean(CONFIG.clientId && CONFIG.spreadsheetId);
 export const hasToken = () => Boolean(token) && Date.now() < tokenExpiry;
@@ -49,6 +146,7 @@ export async function signIn({ silent = false } = {}) {
         calendarGranted = oa.hasGrantedAllScopes(resp, CAL_SCOPE);
         token = resp.access_token;
         tokenExpiry = Date.now() + (Number(resp.expires_in) - 60) * 1000;
+        keepToken();
         p.resolve();
       },
       error_callback: (err) => {
@@ -69,15 +167,18 @@ export function signOut() {
   token = null;
   tokenExpiry = 0;
   calendarGranted = false;
+  ls.del(K_TOKEN);
+  forgetStaySignedIn();
 }
 
-async function call(path, options = {}) {
-  if (!hasToken()) throw new AuthError('Session expired.');
+async function call(path, options = {}, retried = false) {
+  if (!(await ensureToken())) throw new AuthError('Session expired.');
   const res = await fetch(API + encodeURIComponent(CONFIG.spreadsheetId) + path, {
     ...options,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
   });
   if (res.status === 401) {
+    if (!retried && (await renewAfterRejection())) return call(path, options, true);
     token = null;
     throw new AuthError('Session expired.');
   }

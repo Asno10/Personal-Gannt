@@ -4,14 +4,16 @@
 
 // The ?v= must match the one app.js uses, or the browser loads a second copy
 // of sheets.js that has no sign-in token.
-import { accessToken, hasCalendarScope } from './sheets.js?v=23';
-import { addDays } from './parse.js?v=23';
+import { accessToken, hasCalendarScope, ensureToken, renewAfterRejection } from './sheets.js?v=24';
+import { addDays } from './parse.js?v=24';
 
 const API = 'https://www.googleapis.com/calendar/v3';
 
 export class CalendarOff extends Error {}
 
-async function call(path, { method = 'GET', body, ok404 = false } = {}) {
+async function call(path, opts = {}, retried = false) {
+  const { method = 'GET', body, ok404 = false } = opts;
+  await ensureToken();
   const token = accessToken();
   if (!token) throw new CalendarOff('Not signed in.');
   if (!hasCalendarScope()) throw new CalendarOff('Calendar access was not granted at sign-in.');
@@ -20,6 +22,7 @@ async function call(path, { method = 'GET', body, ok404 = false } = {}) {
     headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
+  if (res.status === 401 && !retried && (await renewAfterRejection())) return call(path, opts, true);
   if ((res.status === 404 || res.status === 410) && ok404) return null;
   if (res.status === 204) return {};
   if (!res.ok) {

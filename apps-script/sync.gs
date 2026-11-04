@@ -23,7 +23,12 @@ function setup() {
 }
 
 function onOpen() {
-  SpreadsheetApp.getUi().createMenu('Personal Gantt').addItem('Sync calendar now', 'syncNowFromMenu').addToUi();
+  SpreadsheetApp.getUi().createMenu('Personal Gantt')
+    .addItem('Sync calendar now', 'syncNowFromMenu')
+    .addSeparator()
+    .addItem('Connect the app', 'connectApp')
+    .addItem('Reset app access', 'resetAppAccess')
+    .addToUi();
 }
 
 function syncNowFromMenu() {
@@ -103,4 +108,85 @@ function pgCall_(fn, okIfGone) {
       throw new Error('Google Calendar: ' + msg);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Keeping the app signed in.
+//
+// Deployed as a web app that runs as you, this script hands the app a fresh
+// Google access token whenever it asks, so the app never shows the sign-in
+// screen. Each request must carry the key kept in Script Properties. "Connect
+// the app" writes the web app address and the key to the Settings tab; the app
+// reads them after one normal sign-in on each device. "Reset app access"
+// replaces the key, which signs every device out until it signs in again.
+//
+// Anyone holding the key can read and change your sheets and calendars, so do
+// not share the Settings tab. The app also needs the Google Sheets API: in the
+// Apps Script editor, Services (+), Google Sheets API, Add (keep the name Sheets).
+// ---------------------------------------------------------------------------
+
+var PG_TOKEN_URL = 'app_token_url';
+var PG_TOKEN_KEY = 'app_token_key';
+
+function doGet(e) {
+  var key = PropertiesService.getScriptProperties().getProperty(PG_TOKEN_KEY);
+  var given = String((e && e.parameter && e.parameter.key) || '');
+  var out = key && pgSameKey_(given, key) ? { token: ScriptApp.getOAuthToken() } : { error: 'denied' };
+  return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function connectApp() {
+  var ui = SpreadsheetApp.getUi();
+  if (typeof Sheets === 'undefined') {
+    ui.alert('Add the Google Sheets API first: in the Apps Script editor, Services (+), Google Sheets API, Add (keep the name Sheets). Then run this again.');
+    return;
+  }
+  var url = '';
+  try { url = ScriptApp.getService().getUrl() || ''; } catch (err) {}
+  if (!/\/exec$/.test(url)) {
+    var r = ui.prompt('Connect the app', 'Paste the Web app URL from Deploy > Manage deployments (it ends in /exec).', ui.ButtonSet.OK_CANCEL);
+    if (r.getSelectedButton() !== ui.Button.OK) return;
+    url = r.getResponseText().trim();
+  }
+  if (!/^https:\/\/script\.google\.com\/[\w\/.-]+\/exec$/.test(url)) {
+    ui.alert('That is not a web app URL ending in /exec. Deploy the script first: Deploy > New deployment > Web app, Execute as: Me, Who has access: Anyone.');
+    return;
+  }
+  var props = PropertiesService.getScriptProperties();
+  var key = props.getProperty(PG_TOKEN_KEY) || pgNewKey_();
+  props.setProperty(PG_TOKEN_KEY, key);
+  pgSetSetting_(PG_TOKEN_URL, url, 'Web app that keeps the app signed in; set by Connect the app');
+  pgSetSetting_(PG_TOKEN_KEY, key, 'Keeps the app signed in. Do not share; Reset app access replaces it');
+  ui.alert('Connected. Open the app and sign in once on each device; after that it stays signed in.');
+}
+
+function resetAppAccess() {
+  var key = pgNewKey_();
+  PropertiesService.getScriptProperties().setProperty(PG_TOKEN_KEY, key);
+  pgSetSetting_(PG_TOKEN_KEY, key, 'Keeps the app signed in. Do not share; Reset app access replaces it');
+  SpreadsheetApp.getUi().alert('The key was replaced. Every device is signed out until it signs in once more.');
+}
+
+function pgNewKey_() {
+  return 'pg' + (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
+}
+
+// Compares in constant time, so the key cannot be guessed from response times.
+function pgSameKey_(a, b) {
+  if (a.length !== b.length) return false;
+  var d = 0;
+  for (var i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+
+function pgSetSetting_(key, value, note) {
+  var sheet = SpreadsheetApp.getActive().getSheetByName(PG_SETTINGS);
+  var rows = sheet.getDataRange().getDisplayValues();
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i][0]).trim() === key) {
+      sheet.getRange(i + 1, 2, 1, 2).setValues([[value, note]]);
+      return;
+    }
+  }
+  sheet.appendRow([key, value, note]);
 }
