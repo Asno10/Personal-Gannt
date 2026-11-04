@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=25';
-import * as cal from './calendar.js?v=25';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=25';
+import * as api from './sheets.js?v=26';
+import * as cal from './calendar.js?v=26';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=26';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -37,7 +37,7 @@ const state = {
   plan: null,
   // Google Calendar: status is idle | ok | off | error.
   cal: { status: 'idle', message: '', calendars: [], byDay: {}, calId: '', lastSync: 0, syncing: false, loadedRange: '' },
-  view: store.get('pg.view') || 'today',
+  view: ({ grades: 'exams' })[store.get('pg.view')] || store.get('pg.view') || 'today',
   day: todayKey(),
   taskFilter: 'open',
   loadedAt: 0,
@@ -59,7 +59,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '25';
+const BUILD = '26';
 
 async function checkForUpdate() {
   try {
@@ -873,6 +873,7 @@ function courseOrder(a, b) {
   return a.localeCompare(b);
 }
 
+// The grades part of the Exams page.
 function renderGrades() {
   const toLog = examsToGrade();
   const byCourse = new Map();
@@ -882,7 +883,7 @@ function renderGrades() {
   }
   const courses = [...byCourse.keys()].sort(courseOrder);
   return `
-    <h1 class="page-title">Grades</h1>
+    <h2 class="section-title" id="grades">Grades</h2>
     ${toLog.length ? `
       <section class="block">
         <h2 class="group">To log<span>${toLog.length}</span></h2>
@@ -895,7 +896,7 @@ function renderGrades() {
         </ul>
       </section>` : ''}
     ${courses.map((c) => gradeCard(c, byCourse.get(c))).join('') || (toLog.length ? '' : '<p class="empty">No grades logged yet.</p>')}
-    <button class="btn-wide" data-action="add-grade">${ICON.plus}Log a grade</button>
+    <button class="btn-wide btn-grade" data-action="add-grade">${ICON.plus}Log a grade</button>
     <p class="hint">Grades live in the Grades tab of your sheet. The average counts the grades that have a weight; with no weights it is the plain mean.</p>`;
 }
 
@@ -942,7 +943,6 @@ const VIEWS = [
   ['today', 'Day', 'day'],
   ['timeline', 'Timeline', 'grid'],
   ['exams', 'Exams', 'flag'],
-  ['grades', 'Grades', 'grade'],
   ['tasks', 'Tasks', 'list'],
 ];
 
@@ -988,7 +988,6 @@ function renderPage(v) {
   if (v === 'today') return renderDayPage();
   if (v === 'timeline') return renderTimelinePage();
   if (v === 'exams') $('#view-exams').innerHTML = renderExams();
-  if (v === 'grades') $('#view-grades').innerHTML = renderGrades();
   if (v === 'tasks') $('#view-tasks').innerHTML = renderTasks();
 }
 
@@ -1914,7 +1913,8 @@ function renderExams() {
   return `
     <h1 class="page-title">Exams</h1>
     <div class="exam-grid">${upcoming.map((e) => examCard(e, tk)).join('') || '<p class="empty">No upcoming exams in the sheet.</p>'}</div>
-    ${past.length ? `<h2 class="sub">Finished</h2><div class="exam-grid is-past">${past.map((e) => examCard(e, tk)).join('')}</div>` : ''}`;
+    ${renderGrades()}
+    ${past.length ? `<h2 class="sub">Finished exams</h2><div class="exam-grid is-past">${past.map((e) => examCard(e, tk)).join('')}</div>` : ''}`;
 }
 
 // One clean card per exam: subject, when, and the countdown; one progress bar;
@@ -2703,6 +2703,6 @@ const ICON = {
   grade: svg('<path d="M12 4l9 4.5-9 4.5-9-4.5z"/><path d="M7 10.5V15c0 1.4 2.2 3 5 3s5-1.6 5-3v-4.5"/><path d="M21 8.5V13"/>'),
 };
 
-const VIEW_RENDER = { today: renderToday, timeline: renderTimeline, exams: renderExams, grades: renderGrades, tasks: renderTasks };
+const VIEW_RENDER = { today: renderToday, timeline: renderTimeline, exams: renderExams, tasks: renderTasks };
 
 boot();

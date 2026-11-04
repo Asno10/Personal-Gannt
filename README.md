@@ -1,6 +1,6 @@
 # Personal Gantt
 
-A small web app over the "Personal Gantt" Google Sheet: a day view with study hours, readings, tasks, calendar events and the next exam countdown, a scrollable timeline, exam cards, a grades log and a task list. Changes are written straight back to the sheet, and the whole plan is mirrored in a "Personal Gantt" Google calendar.
+A small web app over the "Personal Gantt" Google Sheet: a day view with study hours, readings, tasks, calendar events and the next exam countdown, a scrollable timeline, exam cards with a grades log, and a task list. Changes are written straight back to the sheet, and the whole plan is mirrored in a "Personal Gantt" Google calendar.
 
 The site holds code only. The sheet and calendars are read in the browser after Google sign-in, so the data stays private even though the site is public.
 
@@ -82,7 +82,7 @@ The daily scheduled run moves every pending flag to a later date that fits (for 
 
 ## Grades
 
-The **Grades** page logs grades per class. Each grade is a row in the **Grades** tab:
+The **Exams** page also logs grades per class: below the upcoming exams is a Grades section, then the finished exams. Each grade is a row in the **Grades** tab:
 
 | Column | Meaning |
 |---|---|
@@ -95,7 +95,7 @@ The **Grades** page logs grades per class. Each grade is a row in the **Grades**
 | exam_id | The exam row it was logged from, if any |
 | notes, updated | Free text; managed by the app |
 
-Each class shows its average out of 100: weighted by the grades that have a weight, with how much of the course those weights cover, or the plain mean when no grade has a weight. Exams finished in the last 60 days with no grade are listed under **To log**, and a finished exam card on the Exams page shows its grade or a **Log grade** button. Grades are not exported to the calendar. If the tab is missing, the app adds it with the first grade.
+Each class shows its average out of 100: weighted by the grades that have a weight, with how much of the course those weights cover, or the plain mean when no grade has a weight. Exams finished in the last 60 days with no grade are listed under **To log**, and a finished exam card shows its grade or a **Log grade** button. Grades are not exported to the calendar. If the tab is missing, the app adds it with the first grade.
 
 ## Archive
 
