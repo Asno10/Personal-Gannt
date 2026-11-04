@@ -1081,3 +1081,13 @@ button.event { width: 100%; text-align: left; }
 .fold-body { transform: translateY(-6px); transition: transform 0.34s var(--ease-out, ease); }
 .at-panel.is-open .fold-body { transform: none; }
 @media (prefers-reduced-motion: reduce) { .fold-body, .bt-chev svg, .block.is-foldable { transition: none; } }
+
+/* Reordering Day view sections (build 33) */
+#day-sections { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+#day-sections > .block { position: relative; transition: padding-bottom 0.3s var(--ease-out, ease), transform 0.38s var(--ease-out, ease), box-shadow 0.25s ease; }
+#day-sections > .block.is-pressing { transform: scale(0.985); transition: transform 0.38s ease; }
+.day-sections.is-sorting > .block:not(.is-lifted) { transition: transform 0.32s var(--ease-out, ease); }
+#day-sections > .block.is-lifted { z-index: 5; transition: box-shadow 0.2s ease; box-shadow: 0 18px 40px rgb(15 25 40 / 0.18), 0 3px 10px rgb(15 25 40 / 0.10); }
+#day-sections > .block.is-settling { z-index: 5; transition: transform 0.44s var(--spring, ease), box-shadow 0.35s ease; }
+.day-hint { text-align: center; margin: 4px 0 8px; }
+@media (prefers-reduced-motion: reduce) { #day-sections > .block, #day-sections > .block.is-settling, .day-sections.is-sorting > .block:not(.is-lifted) { transition: none; } }

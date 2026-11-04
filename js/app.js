@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=32';
-import * as cal from './calendar.js?v=32';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=32';
+import * as api from './sheets.js?v=33';
+import * as cal from './calendar.js?v=33';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=33';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -54,6 +54,9 @@ const state = {
   othersOpen: store.get('pg.othersOpen') === '1',
   // Day view sections folded shut on this device (Study, Reading, Tasks...).
   dayClosed: new Set(JSON.parse(store.get('pg.dayClosed') || '[]')),
+  // The order of the Day view sections, as arranged by dragging.
+  dayOrder: JSON.parse(store.get('pg.dayOrder') || '[]'),
+  dragging: false,
 };
 
 const app = $('#app');
@@ -65,7 +68,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '32';
+const BUILD = '33';
 
 async function checkForUpdate() {
   try {
@@ -1027,7 +1030,7 @@ function renderLater() {
 
 function render() {
   if (!state.plan) return;
-  if ($('#dialog')?.open) { state.dirty = true; return; }
+  if ($('#dialog')?.open || state.dragging) { state.dirty = true; return; }
   if (!VIEWS.some(([v]) => v === state.view)) state.view = 'today';
   const fresh = ensureShell();
   const bar = $('.bar');
@@ -1322,6 +1325,7 @@ function renderDayPage() {
   }
   updateDayHead();
   $('#day-body').innerHTML = renderToday();
+  orderDaySections();
   if (firstStrip) centerStrip(true);
 }
 
@@ -1408,7 +1412,7 @@ function bindStrip(strip) {
 function fold(key, head, body) {
   const open = !state.dayClosed.has(key);
   return `
-    <section class="block is-foldable ${open ? '' : 'is-closed'}">
+    <section class="block is-foldable ${open ? '' : 'is-closed'}" data-section="${key}">
       <div class="block-head block-toggle" role="button" tabindex="0" data-action="toggle-block" data-key="${key}" aria-expanded="${open}">${head}<span class="bt-chev" aria-hidden="true">${ICON.down}</span></div>
       <div class="at-panel ${open ? 'is-open' : ''}" ${open ? '' : 'inert'}><div class="at-inner"><div class="fold-body">${body}</div></div></div>
     </section>`;
@@ -1449,6 +1453,7 @@ function renderToday() {
 
     ${renderCountdown(k)}
 
+    <div class="day-sections" id="day-sections">
     ${fold('study', `
         <h2>Study</h2>
         <span class="block-meta">${total ? fmtH(total) + ' h planned' : 'Nothing planned'}${canLog && (total || logged) ? `, <b class="${logged >= total && logged ? 'is-good' : ''}">${fmtH(logged)} h studied</b>` : ''}</span>
@@ -1492,6 +1497,8 @@ function renderToday() {
 
     ${other.length ? `
     ${fold('other', `<h2>Other</h2>`, `      <ul class="task-list">${other.map((o) => taskRow(o, { hideDate: true })).join('')}</ul>`)}` : ''}
+    </div>
+    <p class="hint day-hint">Press and hold a section, then drag it to move it.</p>
   `;
 }
 
@@ -2565,6 +2572,197 @@ function accountMenu() {
     },
   });
 }
+
+// ---------- Day sections: press, hold and drag to reorder ----------
+// Holding a section for a moment makes it sink slightly; then it lifts with a
+// shadow and follows the finger exactly, the others glide out of its way, the
+// page scrolls when the finger nears the top or bottom, and on release it
+// springs into its new place. A quick tap still folds it; a swipe still
+// scrolls. The order is kept per device.
+
+const DAY_KEYS = ['study', 'reading', 'tasks', 'calendar', 'notes', 'exercise', 'other'];
+const HOLD_MS = 380;
+const SLOP = 8;
+
+function fullDayOrder() {
+  const saved = state.dayOrder.filter((k) => DAY_KEYS.includes(k));
+  return [...saved, ...DAY_KEYS.filter((k) => !saved.includes(k))];
+}
+
+function orderDaySections() {
+  const box = $('#day-sections');
+  if (!box) return;
+  const order = fullDayOrder();
+  [...box.children].filter((n) => n.dataset.section)
+    .sort((a, b) => order.indexOf(a.dataset.section) - order.indexOf(b.dataset.section))
+    .forEach((n) => box.appendChild(n));
+}
+
+// Sections hidden on this day (no reading, say) keep their place in the order.
+function saveDayOrder(visible) {
+  const order = fullDayOrder();
+  const slots = order.map((k, i) => (visible.includes(k) ? i : -1)).filter((i) => i >= 0);
+  slots.forEach((slot, j) => { order[slot] = visible[j]; });
+  state.dayOrder = order;
+  store.set('pg.dayOrder', JSON.stringify(order));
+}
+
+let hold = null;
+let drag = null;
+let swallowClickUntil = 0;
+
+function holdStart(sec, x, y) {
+  if (drag) return;
+  holdCancel();
+  hold = { sec, x, y, timer: setTimeout(() => { const h = hold; hold = null; if (h) dragStart(h.sec, h.y); }, HOLD_MS) };
+  sec.classList.add('is-pressing');
+}
+
+function holdCancel() {
+  if (!hold) return;
+  clearTimeout(hold.timer);
+  hold.sec.classList.remove('is-pressing');
+  hold = null;
+}
+
+function dragStart(sec, y) {
+  const box = sec.parentElement;
+  const page = sec.closest('.page');
+  const els = [...box.children].filter((n) => n.dataset.section);
+  if (els.length < 2) { sec.classList.remove('is-pressing'); return; }
+  const scroll = page.scrollTop;
+  const items = els.map((el) => { const r = el.getBoundingClientRect(); return { el, top: r.top + scroll, h: r.height }; });
+  const from = els.indexOf(sec);
+  const gap = parseFloat(getComputedStyle(sec).marginBottom) || 0;
+  drag = { sec, box, page, items, from, to: from, gap, startY: y, y, startScroll: scroll, raf: 0 };
+  state.dragging = true;
+  swallowClickUntil = Infinity;
+  sec.classList.remove('is-pressing');
+  box.classList.add('is-sorting');
+  sec.classList.add('is-lifted');
+  try { navigator.vibrate?.(12); } catch {}
+  dragUpdate();
+  drag.raf = requestAnimationFrame(autoScroll);
+}
+
+// How far the lifted section may move: no higher than the first slot and no
+// lower than the last, so it never runs past the list into empty space.
+function dragBounds(d) {
+  const me = d.items[d.from];
+  const first = d.items[0];
+  const last = d.items.at(-1);
+  return { min: first.top - me.top, max: last.top + last.h - (me.top + me.h) };
+}
+
+function dragUpdate() {
+  const d = drag;
+  const b = dragBounds(d);
+  const raw = d.y - d.startY + (d.page.scrollTop - d.startScroll);
+  const dy = Math.min(b.max, Math.max(b.min, raw));
+  d.dy = dy;
+  const me = d.items[d.from];
+  const mid = me.top + me.h / 2 + dy;
+  const step = me.h + d.gap;
+  let to = d.from;
+  d.items.forEach((it, i) => {
+    if (i === d.from) return;
+    const c = it.top + it.h / 2;
+    let shift = 0;
+    if (i < d.from && mid < c) { shift = step; to--; }
+    if (i > d.from && mid > c) { shift = -step; to++; }
+    it.el.style.transform = shift ? `translateY(${shift}px)` : '';
+  });
+  if (to !== d.to) { d.to = to; try { navigator.vibrate?.(6); } catch {} }
+  d.sec.style.transform = `translateY(${dy}px) scale(1.03)`;
+}
+
+// Scrolls the page while the finger is near its top or bottom edge.
+function autoScroll() {
+  if (!drag) return;
+  const r = drag.page.getBoundingClientRect();
+  const top = r.top + (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--bar-h')) || 56) + 40;
+  const bottom = r.bottom - 120;
+  let v = 0;
+  if (drag.y < top) v = -Math.min(18, (top - drag.y) / 4);
+  else if (drag.y > bottom) v = Math.min(18, (drag.y - bottom) / 4);
+  // Stop scrolling once the section has reached the end of the list that way.
+  const b = dragBounds(drag);
+  if ((v > 0 && drag.dy >= b.max - 0.5) || (v < 0 && drag.dy <= b.min + 0.5)) v = 0;
+  if (v) {
+    const before = drag.page.scrollTop;
+    drag.page.scrollTop = before + v;
+    if (drag.page.scrollTop !== before) dragUpdate();
+  }
+  drag.raf = requestAnimationFrame(autoScroll);
+}
+
+function dragEnd() {
+  const d = drag;
+  if (!d) return;
+  cancelAnimationFrame(d.raf);
+  drag = null;
+  const before = d.sec.getBoundingClientRect().top;
+  // Put the section in its new place, keeping everything where it is on screen.
+  d.box.classList.remove('is-sorting');
+  d.items.forEach((it) => { it.el.style.transition = 'none'; it.el.style.transform = ''; });
+  const others = d.items.filter((_, i) => i !== d.from).map((it) => it.el);
+  d.box.insertBefore(d.sec, others[d.to] || others.at(-1)?.nextSibling || null);
+  const after = d.sec.getBoundingClientRect().top;
+  d.sec.style.transform = `translateY(${before - after}px) scale(1.03)`;
+  void d.sec.offsetHeight;
+  d.items.forEach((it) => { it.el.style.transition = ''; });
+  // Then let it settle with a spring.
+  d.sec.classList.add('is-settling');
+  d.sec.classList.remove('is-lifted');
+  d.sec.style.transform = '';
+  const done = () => {
+    d.sec.classList.remove('is-settling');
+    state.dragging = false;
+    if (state.dirty && !$('#dialog')?.open) { state.dirty = false; render(); }
+  };
+  setTimeout(done, reducedMotion() ? 0 : 450);
+  swallowClickUntil = performance.now() + 350;
+  if (d.to !== d.from) saveDayOrder([...d.box.children].filter((n) => n.dataset.section).map((n) => n.dataset.section));
+}
+
+const daySection = (target) => (target.closest?.('input, textarea, select, label') ? null : target.closest?.('#day-sections > .block'));
+
+document.addEventListener('touchstart', (ev) => {
+  if (ev.touches.length !== 1) { holdCancel(); return; }
+  const sec = daySection(ev.target);
+  if (sec) holdStart(sec, ev.touches[0].clientX, ev.touches[0].clientY);
+}, { passive: true });
+document.addEventListener('touchmove', (ev) => {
+  const t = ev.touches[0];
+  if (hold && (Math.abs(t.clientX - hold.x) > SLOP || Math.abs(t.clientY - hold.y) > SLOP)) holdCancel();
+  if (!drag) return;
+  if (ev.cancelable) ev.preventDefault();
+  drag.y = t.clientY;
+  dragUpdate();
+}, { passive: false });
+document.addEventListener('touchend', () => { holdCancel(); dragEnd(); }, { passive: true });
+document.addEventListener('touchcancel', () => { holdCancel(); dragEnd(); }, { passive: true });
+
+// The same with a mouse or trackpad.
+document.addEventListener('mousedown', (ev) => {
+  if (ev.button !== 0 || ev.sourceCapabilities?.firesTouchEvents) return;
+  const sec = daySection(ev.target);
+  if (sec) holdStart(sec, ev.clientX, ev.clientY);
+});
+window.addEventListener('mousemove', (ev) => {
+  if (hold && (Math.abs(ev.clientX - hold.x) > SLOP || Math.abs(ev.clientY - hold.y) > SLOP)) holdCancel();
+  if (!drag) return;
+  ev.preventDefault();
+  drag.y = ev.clientY;
+  dragUpdate();
+});
+window.addEventListener('mouseup', () => { holdCancel(); dragEnd(); });
+
+// A hold or a drag is not also a tap on what was under the finger.
+document.addEventListener('click', (ev) => {
+  if (performance.now() < swallowClickUntil) { ev.stopPropagation(); ev.preventDefault(); }
+}, true);
+document.addEventListener('contextmenu', (ev) => { if (hold || drag) ev.preventDefault(); });
 
 // ---------- Toast ----------
 
