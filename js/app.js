@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=24';
-import * as cal from './calendar.js?v=24';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=24';
+import * as api from './sheets.js?v=25';
+import * as cal from './calendar.js?v=25';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=25';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -47,6 +47,7 @@ const state = {
   showDone: false,
   dirty: false,
   flags: { list: [], ok: false },
+  grades: { list: [], header: [], ok: false },
 };
 
 const app = $('#app');
@@ -58,7 +59,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '24';
+const BUILD = '25';
 
 async function checkForUpdate() {
   try {
@@ -142,7 +143,7 @@ async function refresh({ first = false } = {}) {
   try {
     const raw = await api.loadAll();
     if (writes.size || inflight || pendingOps) return; // newer local edits are waiting; their own refresh follows
-    const json = JSON.stringify([raw.items, raw.settings, raw.reschedule]);
+    const json = JSON.stringify([raw.items, raw.settings, raw.reschedule, raw.grades]);
     const changed = json !== lastRawJson;
     lastRawJson = json;
     state.raw = raw;
@@ -151,6 +152,7 @@ async function refresh({ first = false } = {}) {
     if (changed || first) {
       state.plan = parseItems(raw.items, raw.settings, todayKey());
       state.flags = parseFlags(raw.reschedule);
+      state.grades = parseGrades(raw.grades);
     }
     if (first) {
       state.day = clampDay(todayKey());
@@ -669,6 +671,263 @@ async function loadCalendarEvents({ force = false } = {}) {
 
 const calEventsOn = (k) => state.cal.byDay[k] || [];
 
+// ---------- Grades ----------
+// One row per graded piece of work in the Grades tab: the course, what it was,
+// the score out of a maximum, and its weight (its share of the course grade,
+// in percent). A grade logged from an exam keeps that exam's id, so the exam
+// card shows it and the exam leaves the "To log" list.
+
+const GRADE_COLS = ['id', 'course', 'name', 'kind', 'date', 'score', 'out_of', 'weight', 'exam_id', 'notes', 'updated'];
+const GRADE_KINDS = ['Midterm', 'Final', 'Quiz', 'Homework', 'Project', 'Lab', 'Other'];
+
+function parseGrades(rows) {
+  if (!rows) return { list: [], header: [], ok: false };
+  const header = (rows[0] || []).map((h) => String(h).trim().toLowerCase());
+  const at = (r, f) => { const i = header.indexOf(f); return i >= 0 ? String(r[i] ?? '').trim() : ''; };
+  const list = rows.slice(1).map((r) => {
+    const outOf = at(r, 'out_of') === '' ? 100 : toNumber(at(r, 'out_of'));
+    return {
+      id: at(r, 'id'), course: at(r, 'course'), name: at(r, 'name'), kind: at(r, 'kind'),
+      date: (at(r, 'date').match(/^\d{4}-\d{2}-\d{2}/) || [''])[0],
+      scoreText: at(r, 'score'), score: toNumber(at(r, 'score')), outOf,
+      weight: toNumber(at(r, 'weight')), examId: at(r, 'exam_id'), notes: at(r, 'notes'),
+    };
+  }).filter((g) => g.id && g.course);
+  return { list, header, ok: header.includes('id') && header.includes('course') };
+}
+
+const gradeTitle = (g) => g.name || g.kind || 'Grade';
+const gradePct = (g) => (g.outOf > 0 && g.scoreText !== '' ? (g.score / g.outOf) * 100 : null);
+const fmtScore = (n) => (Math.round(n * 100) / 100).toString();
+const gradeOfExam = (examId) => state.grades.list.find((g) => g.examId && g.examId === examId);
+
+// The course average. With weights, the weighted average of the weighted
+// grades and how much of the course they cover; with none, the plain mean.
+function courseStanding(list) {
+  const scored = list.filter((g) => gradePct(g) != null);
+  const weighted = scored.filter((g) => g.weight > 0);
+  if (weighted.length) {
+    const w = weighted.reduce((n, g) => n + g.weight, 0);
+    return { avg: weighted.reduce((n, g) => n + gradePct(g) * g.weight, 0) / w, covered: w, weighted: true, unweighted: scored.length - weighted.length };
+  }
+  if (scored.length) return { avg: scored.reduce((n, g) => n + gradePct(g), 0) / scored.length, covered: 0, weighted: false, unweighted: scored.length };
+  return null;
+}
+
+// Course names to offer: exam subjects first, then any course already graded.
+function gradeCourses() {
+  return [...new Set([...state.plan.exams.map((e) => e.subject), ...state.grades.list.map((g) => g.course)].filter(Boolean))];
+}
+
+// Finished exams from the last 60 days that have no grade yet.
+function examsToGrade() {
+  const tk = todayKey();
+  const from = addDays(tk, -60);
+  return state.plan.exams.filter((e) => e.start < tk && e.start >= from && !gradeOfExam(e.id)).sort((a, b) => b.start.localeCompare(a.start));
+}
+
+// What to prefill when logging an exam's grade.
+function examGradeDraft(e) {
+  const base = (e.title || '').replace(/,?\s*rooms?\s+[\d,\s]+$/i, '').trim();
+  const rest = base.startsWith(e.subject + ' ') ? base.slice(e.subject.length).trim() : base;
+  const kind = /final/i.test(base) ? 'Final' : /midterm|vize/i.test(base) ? 'Midterm' : /quiz/i.test(base) ? 'Quiz' : 'Other';
+  const name = kind === 'Other' ? base : rest || kind;
+  return { course: e.subject, name, kind, date: e.start, examId: e.id };
+}
+
+// Adds the Grades tab, or its header row, if the sheet does not have it yet.
+async function ensureGradesTab() {
+  if (state.grades.ok) return state.grades.header;
+  const sheet = (CONFIG.sheets.grades || 'Grades');
+  const header = await api.readHeader(sheet);
+  if (header === null) await api.addSheet(sheet, GRADE_COLS);
+  else if (!header.some((h) => String(h).trim())) await api.writeCells(GRADE_COLS.map((h, i) => ({ range: api.a1(sheet, `${colLetter(i)}1`), value: h })));
+  else return header.map((h) => String(h).trim().toLowerCase());
+  return GRADE_COLS;
+}
+
+// Runs one change to the Grades tab with the usual saving status and errors.
+async function gradeWrite(work, { done, failed }) {
+  pendingOps++;
+  setSync('saving');
+  try {
+    await work();
+    pendingOps--;
+    setSync('saved');
+    if (done) toast(done);
+  } catch (e) {
+    pendingOps--;
+    if (e instanceof api.AuthError) return renderSignIn(`Your session ended before the grade was saved. Sign in and ${failed} again.`);
+    setSync('error');
+    toast(`Not saved. ${e.message}`);
+  }
+  await refresh();
+}
+
+const gradeCells = (g) => ({
+  course: g.course, name: g.name, kind: g.kind, date: g.date,
+  score: g.scoreText === '' ? '' : g.score, out_of: g.outOf, weight: g.weight || '',
+  exam_id: g.examId || '', notes: g.notes || '', updated: nowStamp(),
+});
+
+function addGrade(g) {
+  const row = { id: newId('g'), ...gradeCells(g) };
+  state.grades.list.push({ ...g, id: row.id });
+  render();
+  return gradeWrite(async () => {
+    const header = await ensureGradesTab();
+    await api.appendRows([header.map((h) => row[h] ?? '')], (CONFIG.sheets.grades || 'Grades'));
+  }, { done: `Grade logged for ${g.course}`, failed: 'log it' });
+}
+
+function updateGrade(g, next) {
+  Object.assign(g, next);
+  render();
+  return gradeWrite(async () => {
+    const sheet = (CONFIG.sheets.grades || 'Grades');
+    const header = state.grades.header;
+    const { map } = await api.readIdColumn(colLetter(header.indexOf('id')), sheet);
+    const row = map.get(g.id);
+    if (!row) throw new Error('That grade was removed from the sheet elsewhere.');
+    const cells = gradeCells(g);
+    await api.writeCells(Object.entries(cells).filter(([f]) => header.includes(f)).map(([f, value]) => ({ range: api.a1(sheet, `${colLetter(header.indexOf(f))}${row}`), value })));
+  }, { done: 'Grade saved', failed: 'change it' });
+}
+
+function deleteGrade(g) {
+  state.grades.list = state.grades.list.filter((x) => x !== g);
+  render();
+  return gradeWrite(async () => {
+    const sheet = (CONFIG.sheets.grades || 'Grades');
+    const { map } = await api.readIdColumn(colLetter(state.grades.header.indexOf('id')), sheet);
+    const row = map.get(g.id);
+    if (row) await api.deleteRow(state.raw.sheetIds[sheet], row);
+  }, { done: `Deleted: ${gradeTitle(g)}`, failed: 'delete it' });
+}
+
+// "72,5" or "72.5"; empty is allowed only where the caller says so.
+const readNumber = (v) => { const s = String(v ?? '').trim().replace(',', '.'); return s === '' ? null : /^-?\d+(\.\d+)?$/.test(s) ? Number(s) : NaN; };
+
+function gradeSheet(g, draft = {}) {
+  const cur = g || { course: '', name: '', kind: '', date: todayKey(), scoreText: '', outOf: 100, weight: 0, examId: '', notes: '', ...draft };
+  const courses = gradeCourses();
+  const exam = cur.examId ? state.plan.exams.find((e) => e.id === cur.examId) : null;
+  const num = (name, label, value, placeholder) => `<label class="field"><span>${label}</span><input name="${name}" inputmode="decimal" autocomplete="off" value="${esc(value)}" placeholder="${placeholder}"></label>`;
+  openSheet(`
+    ${sheetHead(g ? 'Edit grade' : 'Log a grade', exam ? `${exam.title}, ${relDay(exam.start)}` : '')}
+    <label class="field"><span>Course</span><input name="course" list="dl-course" value="${esc(cur.course)}" required autocomplete="off" placeholder="e.g. Calculus I"></label>
+    <datalist id="dl-course">${courses.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
+    <p class="dlg-label">Kind</p>
+    <div class="choice-row">
+      ${GRADE_KINDS.map((k) => `<button type="button" class="choice ${cur.kind === k ? 'is-on' : ''}" data-set="kind" data-value="${k}">${k}</button>`).join('')}
+      <input type="hidden" name="kind" value="${esc(cur.kind)}">
+    </div>
+    <label class="field"><span>Name (optional)</span><input name="name" value="${esc(cur.name)}" autocomplete="off" placeholder="e.g. Midterm 1, Quiz 3"></label>
+    <div class="field-row">
+      ${num('score', 'Score', cur.scoreText, 'e.g. 72.5')}
+      ${num('out_of', 'Out of', cur.outOf || 100, '100')}
+    </div>
+    <div class="field-row">
+      ${num('weight', 'Weight, % of course', cur.weight || '', 'e.g. 40')}
+      <label class="field"><span>Date</span><input name="date" type="date" value="${esc(cur.date || '')}"></label>
+    </div>
+    <label class="field"><span>Note</span><input name="notes" value="${esc(cur.notes || '')}" autocomplete="off" placeholder="Optional"></label>
+    <p class="dlg-hint">The weight is this grade's share of the course grade, from the syllabus. Leave it empty if you do not know it yet.</p>
+    ${sheetActions(g ? 'Save' : 'Log grade', g ? '<button class="btn btn-quiet btn-danger" value="delete" formnovalidate data-confirm>Delete</button>' : '')}`,
+  (d, which) => {
+    if (which === 'delete') return g && deleteGrade(g);
+    const score = readNumber(d.score);
+    const outOf = readNumber(d.out_of);
+    const weight = readNumber(d.weight);
+    if (Number.isNaN(score) || Number.isNaN(outOf) || Number.isNaN(weight)) return toast('Not saved. Score, out of and weight must be numbers.');
+    if (outOf !== null && outOf <= 0) return toast('Not saved. "Out of" must be more than zero.');
+    if (weight !== null && (weight < 0 || weight > 100)) return toast('Not saved. The weight is a percentage from 0 to 100.');
+    const next = {
+      course: (d.course || '').trim(), name: (d.name || '').trim(), kind: d.kind || '', date: d.date || '',
+      scoreText: score === null ? '' : String(score), score: score ?? 0, outOf: outOf ?? 100, weight: weight ?? 0,
+      examId: cur.examId || '', notes: (d.notes || '').trim(),
+    };
+    if (!next.course) return toast('Not saved. Add the course.');
+    if (!next.name && !next.kind) next.kind = 'Other';
+    return g ? updateGrade(g, next) : addGrade(next);
+  }, {
+    onOpen(form) {
+      wireChoices(form);
+      const del = form.querySelector('[data-confirm]');
+      del?.addEventListener('click', (ev) => {
+        if (del.dataset.armed) return;
+        ev.preventDefault();
+        del.dataset.armed = '1';
+        del.textContent = 'Tap again to delete';
+      });
+      form.querySelector(cur.course ? '[name=score]' : '[name=course]').focus();
+    },
+  });
+}
+
+// The order courses are shown in: the study plan's subjects, then the rest.
+function courseOrder(a, b) {
+  const ia = subjectIndex(a), ib = subjectIndex(b);
+  if (ia >= 0 && ib >= 0) return ia - ib;
+  if (ia >= 0 || ib >= 0) return ia >= 0 ? -1 : 1;
+  return a.localeCompare(b);
+}
+
+function renderGrades() {
+  const toLog = examsToGrade();
+  const byCourse = new Map();
+  for (const g of state.grades.list) {
+    if (!byCourse.has(g.course)) byCourse.set(g.course, []);
+    byCourse.get(g.course).push(g);
+  }
+  const courses = [...byCourse.keys()].sort(courseOrder);
+  return `
+    <h1 class="page-title">Grades</h1>
+    ${toLog.length ? `
+      <section class="block">
+        <h2 class="group">To log<span>${toLog.length}</span></h2>
+        <ul class="task-list">${toLog.map((e) => `
+          <li class="grade-todo" style="--c:${subjectVar(e.subject)}">
+            <span class="grade-dot" aria-hidden="true"></span>
+            <span class="flag-body"><span class="task-title">${esc(e.title || e.subject)}</span><span class="task-meta">${esc(relDay(e.start))}</span></span>
+            <button class="log-btn" data-action="log-grade" data-exam="${esc(e.id)}">${ICON.plus}Log</button>
+          </li>`).join('')}
+        </ul>
+      </section>` : ''}
+    ${courses.map((c) => gradeCard(c, byCourse.get(c))).join('') || (toLog.length ? '' : '<p class="empty">No grades logged yet.</p>')}
+    <button class="btn-wide" data-action="add-grade">${ICON.plus}Log a grade</button>
+    <p class="hint">Grades live in the Grades tab of your sheet. The average counts the grades that have a weight; with no weights it is the plain mean.</p>`;
+}
+
+function gradeCard(course, list) {
+  list = [...list].sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
+  const s = courseStanding(list);
+  const sub = !s ? 'No score yet'
+    : s.weighted ? [`${fmtH(s.covered)}% of the course graded`, s.unweighted ? `${s.unweighted} without a weight, not counted` : ''].filter(Boolean).join(' · ')
+    : `Mean of ${plural(s.unweighted, 'grade')}, no weights yet`;
+  return `
+    <section class="block grade-card" style="--c:${subjectVar(course)}">
+      <header class="grade-top">
+        <div class="exam-id">
+          <h2 class="exam-subject">${esc(course)}</h2>
+          <p class="exam-when">${esc(sub)}</p>
+        </div>
+        ${s ? `<div class="grade-avg" aria-label="Average ${fmtH(s.avg)} out of 100"><b>${fmtH(s.avg)}</b><small>/ 100</small></div>` : ''}
+      </header>
+      ${s?.weighted ? `<div class="progress-bar" role="img" aria-label="${fmtH(s.covered)}% of the course graded"><span style="width:${Math.min(100, s.covered)}%"></span></div>` : ''}
+      <ul class="grade-list">${list.map((g) => {
+        const pct = gradePct(g);
+        const meta = [g.name && g.kind && g.name !== g.kind ? g.kind : '', g.date ? relDay(g.date) : '', g.weight ? `${fmtH(g.weight)}%` : ''].filter(Boolean).join(' · ');
+        return `
+          <li><button class="grade-row" data-action="edit-grade" data-grade="${esc(g.id)}">
+            <span class="flag-body"><span class="task-title">${esc(gradeTitle(g))}</span>${meta ? `<span class="task-meta">${esc(meta)}</span>` : ''}</span>
+            <span class="grade-score">${pct == null ? '<span class="task-meta">No score</span>' : `<b>${esc(fmtScore(g.score))}</b>${g.outOf !== 100 ? `<small>/ ${esc(fmtScore(g.outOf))}</small>` : ''}`}</span>
+          </button></li>`;
+      }).join('')}</ul>
+      <button class="add-btn" data-action="add-grade" data-course="${esc(course)}">${ICON.plus}Add grade</button>
+    </section>`;
+}
+
 // ---------- Subject colours ----------
 
 function subjectIndex(name) {
@@ -683,6 +942,7 @@ const VIEWS = [
   ['today', 'Day', 'day'],
   ['timeline', 'Timeline', 'grid'],
   ['exams', 'Exams', 'flag'],
+  ['grades', 'Grades', 'grade'],
   ['tasks', 'Tasks', 'list'],
 ];
 
@@ -701,7 +961,7 @@ function ensureShell() {
         <button class="icon-btn" data-action="menu" aria-label="Account" title="Account">${ICON.user}</button>
       </div>
     </header>
-      <nav class="tabs" id="tabs" aria-label="Views">
+      <nav class="tabs" id="tabs" aria-label="Views" style="--tab-n:${VIEWS.length}">
         <span class="tab-glow" aria-hidden="true"></span>
         ${VIEWS.map(([v, label, icon]) => `<button class="tab" data-action="view" data-view="${v}" aria-current="false">${ICON[icon]}<span>${label}</span></button>`).join('')}
       </nav>
@@ -728,6 +988,7 @@ function renderPage(v) {
   if (v === 'today') return renderDayPage();
   if (v === 'timeline') return renderTimelinePage();
   if (v === 'exams') $('#view-exams').innerHTML = renderExams();
+  if (v === 'grades') $('#view-grades').innerHTML = renderGrades();
   if (v === 'tasks') $('#view-tasks').innerHTML = renderTasks();
 }
 
@@ -1714,7 +1975,19 @@ function examCard(e, tk) {
             </div>
             <div class="spark-axis"><span>${esc(shortLabel(firstK))}</span><span class="spark-key"><i class="k-plan"></i>Planned<i class="k-done"></i>Studied</span><span>Exam</span></div>
           </div>` : ''}` : ''}
+      ${n < 0 ? examGradeLine(e) : ''}
     </article>`;
+}
+
+// On a finished exam card: its grade, or a button to log it.
+function examGradeLine(e) {
+  const g = gradeOfExam(e.id);
+  const pct = g ? gradePct(g) : null;
+  return `
+    <div class="exam-line">
+      <span class="exam-hours">${pct == null ? 'No grade yet' : `Grade <b>${esc(fmtScore(g.score))}</b>${g.outOf !== 100 ? ` / ${esc(fmtScore(g.outOf))}` : ''}${g.weight ? ` · ${esc(fmtH(g.weight))}% of the course` : ''}`}</span>
+      <button class="log-btn ${g ? 'is-logged' : ''}" data-action="log-grade" data-exam="${esc(e.id)}">${g ? ICON.pen + 'Edit' : ICON.plus + 'Log grade'}</button>
+    </div>`;
 }
 
 // ---------- Tasks ----------
@@ -2320,6 +2593,14 @@ document.addEventListener('click', (ev) => {
     case 'toggle-done': state.showDone = !state.showDone; return render();
     case 'tl-today': return scrollTimelineToToday(true);
     case 'archive': return archiveSheet();
+    case 'add-grade': return gradeSheet(null, el.dataset.course ? { course: el.dataset.course } : {});
+    case 'edit-grade': { const g = state.grades.list.find((x) => x.id === el.dataset.grade); return g && gradeSheet(g); }
+    case 'log-grade': {
+      const e = state.plan.exams.find((x) => x.id === el.dataset.exam);
+      if (!e) return;
+      const g = gradeOfExam(e.id);
+      return g ? gradeSheet(g) : gradeSheet(null, examGradeDraft(e));
+    }
     case 'toggle-exam': {
       const sub = el.dataset.subject;
       state.examOpen ||= new Set();
@@ -2419,8 +2700,9 @@ const ICON = {
   archive: svg('<rect x="3.5" y="4.5" width="17" height="4" rx="1"/><path d="M5 8.5v10a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-10"/><path d="M10 12.5h4"/>'),
   flag: svg('<path d="M6 21V4"/><path d="M6 4h11l-2 4 2 4H6"/>'),
   list: svg('<path d="M9 7h11M9 12h11M9 17h11"/><path d="M4 7l1 1 2-2M4 12l1 1 2-2M4 17l1 1 2-2"/>'),
+  grade: svg('<path d="M12 4l9 4.5-9 4.5-9-4.5z"/><path d="M7 10.5V15c0 1.4 2.2 3 5 3s5-1.6 5-3v-4.5"/><path d="M21 8.5V13"/>'),
 };
 
-const VIEW_RENDER = { today: renderToday, timeline: renderTimeline, exams: renderExams, tasks: renderTasks };
+const VIEW_RENDER = { today: renderToday, timeline: renderTimeline, exams: renderExams, grades: renderGrades, tasks: renderTasks };
 
 boot();
