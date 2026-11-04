@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=27';
-import * as cal from './calendar.js?v=27';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=27';
+import * as api from './sheets.js?v=28';
+import * as cal from './calendar.js?v=28';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=28';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -48,6 +48,8 @@ const state = {
   dirty: false,
   flags: { list: [], ok: false },
   grades: { list: [], header: [], ok: false },
+  // The Finished exams section on the Exams page starts folded.
+  finishedOpen: store.get('pg.finishedOpen') === '1',
 };
 
 const app = $('#app');
@@ -59,7 +61,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '27';
+const BUILD = '28';
 
 async function checkForUpdate() {
   try {
@@ -1254,15 +1256,15 @@ function coversDay(item, k) {
   return item.start && item.end ? item.start <= k && k <= item.end : item.start === k;
 }
 
-// An exam is finished once it has ended: its start time plus its minutes, or
-// two hours when the minutes are not given (exams last at most about that
-// long). An exam with no time counts as finished when its day is over.
-const EXAM_DEFAULT_MIN = 120;
+// An exam is finished once it has ended: two hours after its start time
+// (exams last at most about that long; the minutes column is ignored). An
+// exam with no time counts as finished when its day is over.
+const EXAM_MIN = 120;
 function examEndsAt(e) {
   const d = dateOfKey(e.start);
   if (!e.time) { d.setDate(d.getDate() + 1); return d.getTime(); }
   const [h, m] = e.time.split(':').map(Number);
-  d.setHours(h, m + (e.minutes > 0 ? e.minutes : EXAM_DEFAULT_MIN), 0, 0);
+  d.setHours(h, m + EXAM_MIN, 0, 0);
   return d.getTime();
 }
 const examFinished = (e) => Boolean(e.start) && Date.now() >= examEndsAt(e);
@@ -1941,7 +1943,9 @@ function renderExams() {
     <h1 class="page-title">Exams</h1>
     <div class="exam-grid">${upcoming.map((e) => examCard(e, tk)).join('') || '<p class="empty">No upcoming exams in the sheet.</p>'}</div>
     ${renderGrades()}
-    ${past.length ? `<h2 class="sub">Finished exams</h2><div class="exam-grid is-past">${past.map((e) => examCard(e, tk)).join('')}</div>` : ''}`;
+    ${past.length ? `
+      <button class="sub fold-head ${state.finishedOpen ? 'is-open' : ''}" data-action="toggle-finished" aria-expanded="${state.finishedOpen}">Finished exams<span>${past.length}</span>${ICON.down}</button>
+      ${state.finishedOpen ? `<div class="exam-grid is-past">${past.map((e) => examCard(e, tk)).join('')}</div>` : ''}` : ''}`;
 }
 
 // One clean card per exam: subject, when, and the countdown; one progress bar;
@@ -2400,7 +2404,7 @@ function taskForm(t, date) {
     ${dateChoices('date', date, { none: Boolean(t) })}
     <div class="field-row">
       <label class="field"><span>Time (optional)</span><input name="time" type="time" value="${esc(t?.time || '')}"></label>
-      <label class="field"><span>${isRead ? 'Hours' : 'Minutes'}</span><input name="${isRead ? 'hours' : 'minutes'}" type="number" inputmode="decimal" min="0" step="${isRead ? 0.5 : 5}" value="${esc(isRead ? (t?.hours || '') : (t?.minutes || ''))}" placeholder="${isRead ? '1' : '15'}"></label>
+      ${t?.type === 'exam' ? '<div class="field"><span>Length</span><p class="dlg-sub">2 hours</p></div>' : `<label class="field"><span>${isRead ? 'Hours' : 'Minutes'}</span><input name="${isRead ? 'hours' : 'minutes'}" type="number" inputmode="decimal" min="0" step="${isRead ? 0.5 : 5}" value="${esc(isRead ? (t?.hours || '') : (t?.minutes || ''))}" placeholder="${isRead ? '1' : '15'}"></label>`}
     </div>
     <p class="dlg-hint">${t?.calendar === 'off' ? 'Not synced to the calendar.' : 'It also goes in your Personal Gantt calendar.'}</p>
     <p class="dlg-label">Priority</p>
@@ -2635,6 +2639,10 @@ document.addEventListener('click', (ev) => {
       if (state.examOpen.has(sub)) state.examOpen.delete(sub); else state.examOpen.add(sub);
       return render();
     }
+    case 'toggle-finished':
+      state.finishedOpen = !state.finishedOpen;
+      store.set('pg.finishedOpen', state.finishedOpen ? '1' : '0');
+      return render();
     case 'toggle-done-tl': state.tlShowDone = !state.tlShowDone; return render();
     case 'toggle-section': {
       const id = el.dataset.key;

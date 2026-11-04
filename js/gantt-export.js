@@ -148,7 +148,8 @@
     var body = { summary: titleOf(item), description: lines.join('\n') };
     if (item.type === 'exam') body.colorId = '11';
     if (item.time) {
-      var mins = item.minutes > 0 ? item.minutes : DEFAULT_MIN[item.type] || 60;
+      // Exams always last two hours; other items use their minutes.
+      var mins = item.type === 'exam' ? DEFAULT_MIN.exam : item.minutes > 0 ? item.minutes : DEFAULT_MIN[item.type] || 60;
       var last = item.end && day === item.start ? item.end : day;
       body.start = { dateTime: day + 'T' + item.time + ':00', timeZone: timeZone };
       body.end = { dateTime: plusMinutes(last, item.time, mins), timeZone: timeZone };

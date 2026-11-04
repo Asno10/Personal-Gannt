@@ -1037,3 +1037,9 @@ button.event { width: 100%; text-align: left; }
 #view-exams .btn-grade { margin: 4px 0 8px; color: var(--accent); background: var(--panel); border: 0; }
 .section-title { font: 700 22px/1.2 var(--font); margin: 6px 0 12px; }
 #view-exams .grade-card { margin-bottom: 14px; }
+
+/* Finished exams fold (build 28) */
+.fold-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 44px; margin: 12px 0 8px; padding: 0 4px; text-align: left; }
+.fold-head span { color: var(--ink-3); font-weight: 500; }
+.fold-head svg { width: 16px; height: 16px; margin-left: auto; transition: transform 0.25s var(--ease-out, ease); }
+.fold-head.is-open svg { transform: rotate(180deg); }
