@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=36';
-import * as cal from './calendar.js?v=36';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=36';
+import * as api from './sheets.js?v=37';
+import * as cal from './calendar.js?v=37';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=37';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -69,7 +69,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '36';
+const BUILD = '37';
 
 async function checkForUpdate() {
   try {
@@ -1160,6 +1160,10 @@ function fold(key, head, body) {
     </section>`;
 }
 
+// The animated panel every fold in the app uses: its height eases between
+// nothing and its contents. Closed, its contents cannot be tapped or focused.
+const foldPanel = (open, inner, cls = '', attr = '') => `<div class="at-panel ${cls} ${open ? 'is-open' : ''}" ${attr} ${open ? '' : 'inert'}><div class="at-inner">${inner}</div></div>`;
+
 // Opens or shuts a fold in place, without redrawing the page, so it animates.
 function setFold(panel, open) {
   panel?.classList.toggle('is-open', open);
@@ -1220,8 +1224,8 @@ function renderToday() {
         <span class="block-meta">${tasks.length ? `${done.length} of ${tasks.length} done` : 'None planned'}</span>
       `, `      <ul class="task-list">${open.map((t) => taskRow(t, { hideDate: true })).join('')}</ul>
       ${done.length ? `
-        <button class="fold" data-action="toggle-done" aria-expanded="${state.showDone}">${ICON[state.showDone ? 'down' : 'right']}${plural(done.length, 'done task')}</button>
-        ${state.showDone ? `<ul class="task-list">${done.map((t) => taskRow(t, { hideDate: true })).join('')}</ul>` : ''}` : ''}
+        <button class="fold ${state.showDone ? 'is-open' : ''}" data-action="toggle-done" aria-expanded="${state.showDone}">${ICON.down}${plural(done.length, 'done task')}</button>
+        ${foldPanel(state.showDone, `<ul class="task-list">${done.map((t) => taskRow(t, { hideDate: true })).join('')}</ul>`)}` : ''}
       ${overdue.length ? `<h3 class="sub is-alert">Overdue</h3><ul class="task-list">${overdue.map((t) => taskRow(t)).join('')}</ul>` : ''}
       <button class="add-btn" data-action="add-task" data-day="${k}">${ICON.plus}Add a task for ${esc(relDay(k).toLowerCase().startsWith('to') || relDay(k) === 'Yesterday' ? relDay(k).toLowerCase() : 'this day')}</button>`)}
 
@@ -1419,7 +1423,7 @@ function renderTimeline() {
       cell: grid('open-day', '', preview ? `<div class="tl-pv">${days.map((d) => at(d.key, preview(d.key))).join('')}</div>` : ''),
     });
     both(`<div class="at-panel tl-fold ${shut ? '' : 'is-open'}" data-fold="${id}" ${shut ? 'inert' : ''}><div class="at-inner">`);
-    for (const r of list) add(r);
+    for (const r of list) { if (r.raw) both(r.raw); else add(r); }
     both('</div></div>');
   };
 
@@ -1492,8 +1496,11 @@ function renderTimeline() {
   };
   const taskRows = open.map(taskRow);
   if (done.length) {
-    taskRows.push({ kind: 'more', cls: 'tl-more', name: `<button data-action="toggle-done-tl">${state.tlShowDone ? 'Hide' : 'Show'} done (${done.length})</button>`, cell: grid('', '', '') });
-    if (state.tlShowDone) taskRows.push(...done.map(taskRow));
+    taskRows.push({ kind: 'more', cls: 'tl-more', name: `<button data-action="toggle-done-tl" aria-expanded="${state.tlShowDone}"><span>${state.tlShowDone ? 'Hide' : 'Show'} done (${done.length})</span>${ICON.down}</button>`, cell: grid('', '', '') });
+    // The done tasks sit in their own fold, in both columns.
+    taskRows.push({ raw: `<div class="at-panel tl-subfold ${state.tlShowDone ? 'is-open' : ''}" data-sub="done" ${state.tlShowDone ? '' : 'inert'}><div class="at-inner">` });
+    taskRows.push(...done.map(taskRow));
+    taskRows.push({ raw: '</div></div>' });
   }
 
   // Reading plans: one row per reading, by subject and date.
@@ -1714,7 +1721,7 @@ function renderExams() {
     <div class="exam-grid">${upcoming.map((e) => examCard(e, tk)).join('') || '<p class="empty">No upcoming exams in the sheet.</p>'}</div>
     ${past.length ? `
       <button class="sub fold-head ${state.finishedOpen ? 'is-open' : ''}" data-action="toggle-finished" aria-expanded="${state.finishedOpen}">Finished exams<span>${past.length}</span>${ICON.down}</button>
-      ${state.finishedOpen ? `<div class="exam-grid is-past">${past.map((e) => examCard(e, tk)).join('')}</div>` : ''}` : ''}`;
+      ${foldPanel(state.finishedOpen, `<div class="exam-grid is-past">${past.map((e) => examCard(e, tk)).join('')}</div>`, 'fold-exams')}` : ''}`;
 }
 
 // One clean card per exam: subject, when, and the countdown; one progress bar;
@@ -1764,7 +1771,7 @@ function examCard(e, tk) {
           ${!fin ? `<button class="log-btn" data-action="log-hours" data-subject="${esc(e.subject)}" data-day="${tk}">${ICON.plus}Log</button>` : ''}
         </div>
         ${reads.length ? `<p class="exam-read">Reading <b>${readsDone}</b> of ${reads.length} done${readsLate ? ` · <span class="pace-t is-behind">${readsLate} behind</span>` : ''}</p>` : ''}
-        ${open && span.length ? `
+        ${span.length ? foldPanel(open, `
           <div class="exam-chart">
             <div class="spark" aria-hidden="true">
               ${span.map((d) => {
@@ -1775,7 +1782,7 @@ function examCard(e, tk) {
               }).join('')}
             </div>
             <div class="spark-axis"><span>${esc(shortLabel(firstK))}</span><span class="spark-key"><i class="k-plan"></i>Planned<i class="k-done"></i>Studied</span><span>Exam</span></div>
-          </div>` : ''}` : ''}
+          </div>`, 'fold-chart') : ''}` : ''}
     </article>`;
 }
 
@@ -2170,15 +2177,17 @@ function taskForm(t, date) {
       <input type="hidden" name="prio" value="${esc(st.prio)}">
     </div>
     <label class="field"><span>Note</span><input name="note" value="${esc(st.note)}" autocomplete="off" placeholder="Optional"></label>
-    <details class="more">
-      <summary>Area and topic</summary>
+    <div class="more">
+      <button type="button" class="more-toggle" data-action="toggle-more" aria-expanded="false"><span>Area and topic</span>${ICON.down}</button>
+      ${foldPanel(false, `<div class="more-body">
       <div class="field-row">
         <label class="field"><span>Area</span><input name="phase" list="dl-phase" value="${esc(t ? t.phase : '')}" autocomplete="off"></label>
         <label class="field"><span>Topic</span><input name="subject" list="dl-subject" value="${esc(t?.subject || '')}" autocomplete="off"></label>
       </div>
       <datalist id="dl-phase">${phases.map((p) => `<option value="${esc(p)}">`).join('')}</datalist>
       <datalist id="dl-subject">${subjects.map((p) => `<option value="${esc(p)}">`).join('')}</datalist>
-    </details>`;
+      </div>`)}
+    </div>`;
 }
 
 const KIND = { task: 'task', reading: 'reading', event: 'event', exam: 'exam', exercise: 'exercise block', note: 'note' };
@@ -2637,14 +2646,24 @@ document.addEventListener('click', (ev) => {
     case 'edit-note': return editNote(item, el.dataset.day);
     case 'add-task': return addTaskSheet(el.dataset.day);
     case 'task-filter': state.taskFilter = el.dataset.filter; return render();
-    case 'toggle-done': state.showDone = !state.showDone; return render();
+    case 'toggle-done': {
+      const open = (state.showDone = !state.showDone);
+      el.classList.toggle('is-open', open);
+      el.setAttribute('aria-expanded', String(open));
+      setFold(el.nextElementSibling, open);
+      return;
+    }
     case 'tl-today': return scrollTimelineToToday(true);
     case 'archive': return archiveSheet();
     case 'toggle-exam': {
       const sub = el.dataset.subject;
       state.examOpen ||= new Set();
-      if (state.examOpen.has(sub)) state.examOpen.delete(sub); else state.examOpen.add(sub);
-      return render();
+      const open = !state.examOpen.has(sub);
+      if (open) state.examOpen.add(sub); else state.examOpen.delete(sub);
+      el.classList.toggle('is-open', open);
+      el.setAttribute('aria-expanded', String(open));
+      setFold(el.querySelector('.fold-chart'), open);
+      return;
     }
     case 'toggle-others': {
       // Changed in place rather than redrawn, so the panel can animate open or shut.
@@ -2667,11 +2686,29 @@ document.addEventListener('click', (ev) => {
       setFold(el.nextElementSibling, open);
       return;
     }
-    case 'toggle-finished':
-      state.finishedOpen = !state.finishedOpen;
-      store.set('pg.finishedOpen', state.finishedOpen ? '1' : '0');
-      return render();
-    case 'toggle-done-tl': state.tlShowDone = !state.tlShowDone; return render();
+    case 'toggle-finished': {
+      const open = (state.finishedOpen = !state.finishedOpen);
+      store.set('pg.finishedOpen', open ? '1' : '0');
+      el.classList.toggle('is-open', open);
+      el.setAttribute('aria-expanded', String(open));
+      setFold(el.nextElementSibling, open);
+      return;
+    }
+    case 'toggle-more': {
+      const open = el.getAttribute('aria-expanded') !== 'true';
+      el.setAttribute('aria-expanded', String(open));
+      el.classList.toggle('is-open', open);
+      setFold(el.nextElementSibling, open);
+      return;
+    }
+    case 'toggle-done-tl': {
+      const open = (state.tlShowDone = !state.tlShowDone);
+      el.setAttribute('aria-expanded', String(open));
+      el.classList.toggle('is-open', open);
+      el.firstElementChild.textContent = el.firstElementChild.textContent.replace(/^(Show|Hide)/, open ? 'Hide' : 'Show');
+      $$('#view-timeline .tl-subfold[data-sub="done"]').forEach((f) => setFold(f, open));
+      return;
+    }
     case 'toggle-section': {
       // Changed in place, not redrawn, so both columns animate together.
       const id = el.dataset.key;
