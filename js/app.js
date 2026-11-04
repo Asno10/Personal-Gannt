@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=30';
-import * as cal from './calendar.js?v=30';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=30';
+import * as api from './sheets.js?v=31';
+import * as cal from './calendar.js?v=31';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=31';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -63,7 +63,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '30';
+const BUILD = '31';
 
 async function checkForUpdate() {
   try {
@@ -1439,9 +1439,9 @@ function renderToday() {
       ${others.length ? `
         <div class="add-row">
           <button class="add-label add-toggle ${state.othersOpen ? 'is-open' : ''}" data-action="toggle-others" aria-expanded="${state.othersOpen}"><span class="at-label">${canLog ? 'Log time for another subject' : 'Add a subject'}</span><span class="at-count">${others.length}</span><span class="at-act">${state.othersOpen ? 'Hide' : 'Show'}${ICON.down}</span></button>
-          ${!state.othersOpen ? '' : `<div class="chips">${others.map((s) => canLog
+          <div class="at-panel ${state.othersOpen ? 'is-open' : ''}" ${state.othersOpen ? '' : 'inert'}><div class="at-inner"><div class="chips">${others.map((s) => canLog
             ? `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="log-hours" data-subject="${esc(s.subject)}" data-day="${k}" aria-label="Log time for ${esc(s.subject)}">${esc(s.subject)}</button>`
-            : `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="hours" data-id="${s.id}" data-day="${k}" data-delta="1" aria-label="Add 1 hour of ${esc(s.subject)}">${esc(s.subject)}</button>`).join('')}</div>`}
+            : `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="hours" data-id="${s.id}" data-day="${k}" data-delta="1" aria-label="Add 1 hour of ${esc(s.subject)}">${esc(s.subject)}</button>`).join('')}</div></div></div>
         </div>` : ''}
     </section>
 
@@ -2641,10 +2641,19 @@ document.addEventListener('click', (ev) => {
       if (state.examOpen.has(sub)) state.examOpen.delete(sub); else state.examOpen.add(sub);
       return render();
     }
-    case 'toggle-others':
-      state.othersOpen = !state.othersOpen;
-      store.set('pg.othersOpen', state.othersOpen ? '1' : '0');
-      return render();
+    case 'toggle-others': {
+      // Changed in place rather than redrawn, so the panel can animate open or shut.
+      const open = (state.othersOpen = !state.othersOpen);
+      store.set('pg.othersOpen', open ? '1' : '0');
+      el.classList.toggle('is-open', open);
+      el.setAttribute('aria-expanded', String(open));
+      const act = el.querySelector('.at-act');
+      if (act) act.firstChild.textContent = open ? 'Hide' : 'Show';
+      const panel = el.parentElement.querySelector('.at-panel');
+      panel?.classList.toggle('is-open', open);
+      panel?.toggleAttribute('inert', !open);
+      return;
+    }
     case 'toggle-finished':
       state.finishedOpen = !state.finishedOpen;
       store.set('pg.finishedOpen', state.finishedOpen ? '1' : '0');
