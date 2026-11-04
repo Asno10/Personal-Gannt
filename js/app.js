@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=37';
-import * as cal from './calendar.js?v=37';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=37';
+import * as api from './sheets.js?v=38';
+import * as cal from './calendar.js?v=38';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=38';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -69,7 +69,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '37';
+const BUILD = '38';
 
 async function checkForUpdate() {
   try {
@@ -1583,9 +1583,11 @@ function renderTimeline() {
       const o = on.filter((t) => t.status.status === 'open').length;
       return o ? `<span class="tl-dot tl-dot-sub ${o > 1 ? 'is-many' : ''}">${o > 1 ? o : ''}</span>` : on.length ? `<span class="tl-done is-faint">${ICON.check}</span>` : '';
     },
+    // The same events as the open section lists (those on a study subject's
+    // row are left out), orange only for a deadline still to come.
     events(k) {
-      const ev = ofType('event').filter((e) => coversDay(e, k));
-      return ev.length ? `<span class="tl-bar ${ev.some((e) => /deadline/i.test(e.subject)) ? 'is-alert' : ''}"></span>` : '';
+      const ev = ofType('event').filter((e) => !(e.start && studySubjects.has(e.area)) && coversDay(e, k));
+      return ev.length ? `<span class="tl-bar ${ev.some((e) => { const dl = deadlineState(e); return dl && !dl.passed; }) ? 'is-alert' : ''}"></span>` : '';
     },
     calendar(k) {
       const c = calEventsOn(k).length;
