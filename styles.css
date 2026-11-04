@@ -1110,3 +1110,12 @@ button.event { width: 100%; text-align: left; }
 .tlx :is(.tn, .gr, .tl-fold).is-lifted { z-index: 7; background: color-mix(in srgb, var(--accent) 9%, var(--paper)); box-shadow: 0 10px 22px -10px rgb(15 25 40 / 0.35); }
 .tlx :is(.tn, .gr, .tl-fold).is-settling { z-index: 7; transition: transform 0.44s var(--spring, ease), background 0.4s ease, box-shadow 0.35s ease; }
 @media (prefers-reduced-motion: reduce) { .tlx.is-sorting :is(.tn, .gr, .tl-fold), .tlx :is(.tn, .gr, .tl-fold).is-settling { transition: none; } }
+
+/* Deadlines (build 35): an orange Due tag instead of red text, which read as
+   already missed; a passed deadline turns grey with a Passed tag. */
+.tl-events.is-deadline .tl-sub { color: var(--ink-2); font-weight: 500; }
+.tl-events.is-deadline .tl-sub::before { content: 'Due'; display: inline-block; margin-right: 6px; padding: 1px 6px; border-radius: 5px; font-size: 0.68rem; font-weight: 700; line-height: 1.35; vertical-align: 1px; background: var(--signal); color: var(--signal-ink); }
+.tl-events.is-passed .tl-label { color: var(--ink-3); }
+.tl-events.is-passed .tl-sub { color: var(--ink-3); }
+.tl-events.is-passed .tl-sub::before { content: 'Passed'; background: var(--fill-2, var(--fill)); color: var(--ink-2); }
+.event.is-alert .event-kind { color: var(--signal); }

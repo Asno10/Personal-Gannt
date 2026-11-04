@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=34';
-import * as cal from './calendar.js?v=34';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=34';
+import * as api from './sheets.js?v=35';
+import * as cal from './calendar.js?v=35';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=35';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -70,7 +70,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '34';
+const BUILD = '35';
 
 async function checkForUpdate() {
   try {
@@ -1769,15 +1769,26 @@ function renderTimeline() {
 
   // Deadlines and events kept in the sheet: a bar over the days they cover.
   // Those already shown on a study subject's row are left out here.
+  // A deadline is marked with an orange Due tag and how far away it is, not red
+  // text (which read as already missed); once it has passed it turns grey.
+  const deadlineState = (e) => {
+    if (!/deadline/i.test(e.subject) || !e.start) return null;
+    const n = daysBetween(tk, e.start);
+    const nowHm = new Date().toTimeString().slice(0, 5);
+    const passed = n < 0 || (n === 0 && e.time && e.time <= nowHm);
+    const when = passed ? (n === 0 ? 'earlier today' : n === -1 ? 'yesterday' : `${-n} days ago`) : n === 0 ? 'today' : n === 1 ? 'tomorrow' : `in ${n} days`;
+    return { passed, when };
+  };
   const eventRows = ofType('event').filter((e) => !(e.start && studySubjects.has(e.area))).map((e) => {
-    const alert = /deadline/i.test(e.subject);
+    const dl = deadlineState(e);
+    const alert = dl && !dl.passed;
     const s0 = e.start;
     const s1 = e.end || e.start;
     const span = s0 && idx[s0] != null ? Math.max(1, (idx[s1] ?? idx[s0]) - idx[s0] + 1) : 1;
     const marks = Object.keys(e.cells).map((k) => at(k, `<span class="tl-bar ${alert ? 'is-alert' : ''}"></span>`)).join('');
     return {
-      cls: `tl-events ${alert ? 'is-alert' : ''}`,
-      name: nameHtml({ name: e.title, sub: [e.subject, e.time].filter(Boolean).join(', '), action: `data-action="edit-task" data-id="${e.id}"`, flag: flagOf(e.id) }),
+      cls: `tl-events ${dl ? (dl.passed ? 'is-deadline is-passed' : 'is-deadline') : ''}`,
+      name: nameHtml({ name: e.title, sub: dl ? [dl.when, e.time].filter(Boolean).join(', ') : [e.subject, e.time].filter(Boolean).join(', '), action: `data-action="edit-task" data-id="${e.id}"`, flag: flagOf(e.id) }),
       cell: grid('open-day', '', (s0 ? at(s0, `<span class="tl-bar ${alert ? 'is-alert' : ''}"></span>${flagOf(e.id) ? `<span class="tl-flag" aria-label="Flagged for rescheduling">${ICON.flag}</span>` : ''}`, 'is-bar', span) : '') + marks),
     };
   });
