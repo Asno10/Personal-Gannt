@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=29';
-import * as cal from './calendar.js?v=29';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=29';
+import * as api from './sheets.js?v=30';
+import * as cal from './calendar.js?v=30';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=30';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -63,7 +63,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '29';
+const BUILD = '30';
 
 async function checkForUpdate() {
   try {
@@ -1438,7 +1438,7 @@ function renderToday() {
       <ul class="study-list">${study.map(({ item, hours }) => studyRow(item, hours, k)).join('')}</ul>
       ${others.length ? `
         <div class="add-row">
-          <button class="add-label add-toggle ${state.othersOpen ? 'is-open' : ''}" data-action="toggle-others" aria-expanded="${state.othersOpen}">${canLog ? 'Log time for another subject' : 'Add a subject'}<span>${others.length}</span>${ICON.down}</button>
+          <button class="add-label add-toggle ${state.othersOpen ? 'is-open' : ''}" data-action="toggle-others" aria-expanded="${state.othersOpen}"><span class="at-label">${canLog ? 'Log time for another subject' : 'Add a subject'}</span><span class="at-count">${others.length}</span><span class="at-act">${state.othersOpen ? 'Hide' : 'Show'}${ICON.down}</span></button>
           ${!state.othersOpen ? '' : `<div class="chips">${others.map((s) => canLog
             ? `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="log-hours" data-subject="${esc(s.subject)}" data-day="${k}" aria-label="Log time for ${esc(s.subject)}">${esc(s.subject)}</button>`
             : `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="hours" data-id="${s.id}" data-day="${k}" data-delta="1" aria-label="Add 1 hour of ${esc(s.subject)}">${esc(s.subject)}</button>`).join('')}</div>`}
