@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=28';
-import * as cal from './calendar.js?v=28';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=28';
+import * as api from './sheets.js?v=29';
+import * as cal from './calendar.js?v=29';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=29';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -50,6 +50,8 @@ const state = {
   grades: { list: [], header: [], ok: false },
   // The Finished exams section on the Exams page starts folded.
   finishedOpen: store.get('pg.finishedOpen') === '1',
+  // The other subjects under Study on the Day view start folded too.
+  othersOpen: store.get('pg.othersOpen') === '1',
 };
 
 const app = $('#app');
@@ -61,7 +63,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '28';
+const BUILD = '29';
 
 async function checkForUpdate() {
   try {
@@ -1436,10 +1438,10 @@ function renderToday() {
       <ul class="study-list">${study.map(({ item, hours }) => studyRow(item, hours, k)).join('')}</ul>
       ${others.length ? `
         <div class="add-row">
-          <span class="add-label">${canLog ? 'Log time for another subject' : 'Add a subject'}</span>
-          <div class="chips">${others.map((s) => canLog
+          <button class="add-label add-toggle ${state.othersOpen ? 'is-open' : ''}" data-action="toggle-others" aria-expanded="${state.othersOpen}">${canLog ? 'Log time for another subject' : 'Add a subject'}<span>${others.length}</span>${ICON.down}</button>
+          ${!state.othersOpen ? '' : `<div class="chips">${others.map((s) => canLog
             ? `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="log-hours" data-subject="${esc(s.subject)}" data-day="${k}" aria-label="Log time for ${esc(s.subject)}">${esc(s.subject)}</button>`
-            : `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="hours" data-id="${s.id}" data-day="${k}" data-delta="1" aria-label="Add 1 hour of ${esc(s.subject)}">${esc(s.subject)}</button>`).join('')}</div>
+            : `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="hours" data-id="${s.id}" data-day="${k}" data-delta="1" aria-label="Add 1 hour of ${esc(s.subject)}">${esc(s.subject)}</button>`).join('')}</div>`}
         </div>` : ''}
     </section>
 
@@ -2639,6 +2641,10 @@ document.addEventListener('click', (ev) => {
       if (state.examOpen.has(sub)) state.examOpen.delete(sub); else state.examOpen.add(sub);
       return render();
     }
+    case 'toggle-others':
+      state.othersOpen = !state.othersOpen;
+      store.set('pg.othersOpen', state.othersOpen ? '1' : '0');
+      return render();
     case 'toggle-finished':
       state.finishedOpen = !state.finishedOpen;
       store.set('pg.finishedOpen', state.finishedOpen ? '1' : '0');
