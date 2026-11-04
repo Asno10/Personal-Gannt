@@ -1066,3 +1066,18 @@ button.event { width: 100%; text-align: left; }
 .at-inner .chips { padding-top: 10px; transform: translateY(-6px); transition: transform 0.34s var(--ease-out, ease); }
 .at-panel.is-open .at-inner .chips { transform: none; }
 @media (prefers-reduced-motion: reduce) { .at-panel, .at-panel.is-open, .at-inner .chips, .add-toggle .at-act svg { transition: none; } }
+
+/* Folding Day view sections (build 32): tap a section heading to fold it. */
+.block-toggle { cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; transition: border-color 0.3s ease, opacity 0.15s ease; }
+.block-toggle:active { opacity: 0.6; }
+.block-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+.block-toggle .block-meta { margin-left: auto; }
+.bt-chev { flex: none; display: inline-grid; place-items: center; width: 26px; height: 26px; margin-left: 8px; border-radius: 50%; align-self: center; color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.bt-chev svg { width: 15px; height: 15px; transition: transform 0.3s var(--ease-out, ease); }
+.block.is-closed .bt-chev svg { transform: rotate(-90deg); }
+.block.is-closed .block-head { border-bottom-color: transparent; }
+.block.is-foldable { transition: padding-bottom 0.3s var(--ease-out, ease); }
+.block.is-foldable.is-closed { padding-bottom: 0; }
+.fold-body { transform: translateY(-6px); transition: transform 0.34s var(--ease-out, ease); }
+.at-panel.is-open .fold-body { transform: none; }
+@media (prefers-reduced-motion: reduce) { .fold-body, .bt-chev svg, .block.is-foldable { transition: none; } }

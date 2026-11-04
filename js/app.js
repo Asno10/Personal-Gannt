@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=31';
-import * as cal from './calendar.js?v=31';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=31';
+import * as api from './sheets.js?v=32';
+import * as cal from './calendar.js?v=32';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=32';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -52,6 +52,8 @@ const state = {
   finishedOpen: store.get('pg.finishedOpen') === '1',
   // The other subjects under Study on the Day view start folded too.
   othersOpen: store.get('pg.othersOpen') === '1',
+  // Day view sections folded shut on this device (Study, Reading, Tasks...).
+  dayClosed: new Set(JSON.parse(store.get('pg.dayClosed') || '[]')),
 };
 
 const app = $('#app');
@@ -63,7 +65,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '31';
+const BUILD = '32';
 
 async function checkForUpdate() {
   try {
@@ -1401,6 +1403,23 @@ function bindStrip(strip) {
   }, { passive: true });
 }
 
+// A Day view section whose heading folds it open and shut, with the same
+// animation as the other-subjects fold. Each section's state is kept per device.
+function fold(key, head, body) {
+  const open = !state.dayClosed.has(key);
+  return `
+    <section class="block is-foldable ${open ? '' : 'is-closed'}">
+      <div class="block-head block-toggle" role="button" tabindex="0" data-action="toggle-block" data-key="${key}" aria-expanded="${open}">${head}<span class="bt-chev" aria-hidden="true">${ICON.down}</span></div>
+      <div class="at-panel ${open ? 'is-open' : ''}" ${open ? '' : 'inert'}><div class="at-inner"><div class="fold-body">${body}</div></div></div>
+    </section>`;
+}
+
+// Opens or shuts a fold in place, without redrawing the page, so it animates.
+function setFold(panel, open) {
+  panel?.classList.toggle('is-open', open);
+  panel?.toggleAttribute('inert', !open);
+}
+
 function renderToday() {
   const k = state.day;
   const isToday = k === todayKey();
@@ -1430,70 +1449,49 @@ function renderToday() {
 
     ${renderCountdown(k)}
 
-    <section class="block">
-      <div class="block-head">
+    ${fold('study', `
         <h2>Study</h2>
         <span class="block-meta">${total ? fmtH(total) + ' h planned' : 'Nothing planned'}${canLog && (total || logged) ? `, <b class="${logged >= total && logged ? 'is-good' : ''}">${fmtH(logged)} h studied</b>` : ''}</span>
-      </div>
-      <ul class="study-list">${study.map(({ item, hours }) => studyRow(item, hours, k)).join('')}</ul>
+      `, `      <ul class="study-list">${study.map(({ item, hours }) => studyRow(item, hours, k)).join('')}</ul>
       ${others.length ? `
         <div class="add-row">
           <button class="add-label add-toggle ${state.othersOpen ? 'is-open' : ''}" data-action="toggle-others" aria-expanded="${state.othersOpen}"><span class="at-label">${canLog ? 'Log time for another subject' : 'Add a subject'}</span><span class="at-count">${others.length}</span><span class="at-act">${state.othersOpen ? 'Hide' : 'Show'}${ICON.down}</span></button>
           <div class="at-panel ${state.othersOpen ? 'is-open' : ''}" ${state.othersOpen ? '' : 'inert'}><div class="at-inner"><div class="chips">${others.map((s) => canLog
             ? `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="log-hours" data-subject="${esc(s.subject)}" data-day="${k}" aria-label="Log time for ${esc(s.subject)}">${esc(s.subject)}</button>`
             : `<button class="chip" style="--c:${subjectVar(s.subject)}" data-action="hours" data-id="${s.id}" data-day="${k}" data-delta="1" aria-label="Add 1 hour of ${esc(s.subject)}">${esc(s.subject)}</button>`).join('')}</div></div></div>
-        </div>` : ''}
-    </section>
+        </div>` : ''}`)}
 
     ${reads.length || readsLate.length ? `
-    <section class="block">
-      <div class="block-head">
+    ${fold('reading', `
         <h2>Reading</h2>
         <span class="block-meta">${reads.length ? `${readsDone} of ${reads.length} done, ${fmtH(reads.reduce((n, r) => n + r.hours, 0))} h` : ''}</span>
-      </div>
-      <ul class="task-list">${reads.map((r) => taskRow(r, { hideDate: true, reading: true })).join('')}</ul>
-      ${readsLate.length ? `<h3 class="sub is-alert">Not read yet</h3><ul class="task-list">${readsLate.map((r) => taskRow(r, { reading: true })).join('')}</ul>` : ''}
-    </section>` : ''}
+      `, `      <ul class="task-list">${reads.map((r) => taskRow(r, { hideDate: true, reading: true })).join('')}</ul>
+      ${readsLate.length ? `<h3 class="sub is-alert">Not read yet</h3><ul class="task-list">${readsLate.map((r) => taskRow(r, { reading: true })).join('')}</ul>` : ''}`)}` : ''}
 
-    <section class="block">
-      <div class="block-head">
+    ${fold('tasks', `
         <h2>Tasks</h2>
         <span class="block-meta">${tasks.length ? `${done.length} of ${tasks.length} done` : 'None planned'}</span>
-      </div>
-      <ul class="task-list">${open.map((t) => taskRow(t, { hideDate: true })).join('')}</ul>
+      `, `      <ul class="task-list">${open.map((t) => taskRow(t, { hideDate: true })).join('')}</ul>
       ${done.length ? `
         <button class="fold" data-action="toggle-done" aria-expanded="${state.showDone}">${ICON[state.showDone ? 'down' : 'right']}${plural(done.length, 'done task')}</button>
         ${state.showDone ? `<ul class="task-list">${done.map((t) => taskRow(t, { hideDate: true })).join('')}</ul>` : ''}` : ''}
       ${overdue.length ? `<h3 class="sub is-alert">Overdue</h3><ul class="task-list">${overdue.map((t) => taskRow(t)).join('')}</ul>` : ''}
-      <button class="add-btn" data-action="add-task" data-day="${k}">${ICON.plus}Add a task for ${esc(relDay(k).toLowerCase().startsWith('to') || relDay(k) === 'Yesterday' ? relDay(k).toLowerCase() : 'this day')}</button>
-    </section>
+      <button class="add-btn" data-action="add-task" data-day="${k}">${ICON.plus}Add a task for ${esc(relDay(k).toLowerCase().startsWith('to') || relDay(k) === 'Yesterday' ? relDay(k).toLowerCase() : 'this day')}</button>`)}
 
-    <section class="block">
-      <div class="block-head"><h2>Calendar</h2><span class="block-meta">${calMeta()}</span></div>
-      ${events.map((e) => eventLine(e, k)).join('')}
+    ${fold('calendar', `<h2>Calendar</h2><span class="block-meta">${calMeta()}</span>`, `      ${events.map((e) => eventLine(e, k)).join('')}
       ${calEvents.map((e) => `<button class="event is-cal" style="--c:${esc(e.color || 'var(--ink-3)')}" data-action="cal-event" data-cal="${esc(e.calId)}" data-ev="${esc(e.id)}" data-day="${k}"><span class="event-kind">${e.allDay ? 'All day' : esc(e.time + (e.endTime ? ' to ' + e.endTime : ''))}</span><span>${esc(e.title)}${flagMark(flagOf(e.id, e.calId))}<small class="event-cal">${esc(e.calName)}</small></span></button>`).join('')}
-      ${!events.length && !calEvents.length ? `<p class="note is-quiet">${state.cal.status === 'ok' ? 'Nothing in your calendars.' : state.cal.status === 'off' ? 'Calendar not connected. See Account.' : 'Loading calendars.'}</p>` : ''}
-    </section>
+      ${!events.length && !calEvents.length ? `<p class="note is-quiet">${state.cal.status === 'ok' ? 'Nothing in your calendars.' : state.cal.status === 'off' ? 'Calendar not connected. See Account.' : 'Loading calendars.'}</p>` : ''}`)}
 
-    <section class="block">
-      <div class="block-head"><h2>Notes</h2></div>
-      ${notes.map((n) => `<button class="line" data-action="edit-note" data-id="${n.id}" data-day="${k}">${esc(n.title)}<span class="line-edit">${ICON.pen}</span></button>`).join('')}
-      <button class="line is-empty" data-action="edit-note" data-day="${k}">${notes.length ? 'Add another note' : 'Nothing noted for this day. Tap to add.'}<span class="line-edit">${ICON.pen}</span></button>
-    </section>
+    ${fold('notes', `<h2>Notes</h2>`, `      ${notes.map((n) => `<button class="line" data-action="edit-note" data-id="${n.id}" data-day="${k}">${esc(n.title)}<span class="line-edit">${ICON.pen}</span></button>`).join('')}
+      <button class="line is-empty" data-action="edit-note" data-day="${k}">${notes.length ? 'Add another note' : 'Nothing noted for this day. Tap to add.'}<span class="line-edit">${ICON.pen}</span></button>`)}
 
     ${exercise.length || phase ? `
-    <section class="block">
-      <div class="block-head"><h2>Exercise</h2>${phase ? `<span class="block-meta">${esc(phase.subject)}</span>` : ''}</div>
-      ${exercise.map((e) => `<button class="line" data-action="edit-cell" data-id="${e.id}" data-day="${k}"><strong>${esc(exLabel(e.cells[k]))}</strong><span class="line-edit">${ICON.pen}</span></button>`).join('')}
+    ${fold('exercise', `<h2>Exercise</h2>${phase ? `<span class="block-meta">${esc(phase.subject)}</span>` : ''}`, `      ${exercise.map((e) => `<button class="line" data-action="edit-cell" data-id="${e.id}" data-day="${k}"><strong>${esc(exLabel(e.cells[k]))}</strong><span class="line-edit">${ICON.pen}</span></button>`).join('')}
       ${!exercise.some((e) => !/weigh/i.test(e.subject)) && phase ? `<button class="line is-empty" data-action="edit-cell" data-id="${phase.id}" data-day="${k}">Rest day. Tap to plan a session.<span class="line-edit">${ICON.pen}</span></button>` : ''}
-      ${phase ? `<p class="note">${esc(phase.title)}</p>` : ''}
-    </section>` : ''}
+      ${phase ? `<p class="note">${esc(phase.title)}</p>` : ''}`)}` : ''}
 
     ${other.length ? `
-    <section class="block">
-      <div class="block-head"><h2>Other</h2></div>
-      <ul class="task-list">${other.map((o) => taskRow(o, { hideDate: true })).join('')}</ul>
-    </section>` : ''}
+    ${fold('other', `<h2>Other</h2>`, `      <ul class="task-list">${other.map((o) => taskRow(o, { hideDate: true })).join('')}</ul>`)}` : ''}
   `;
 }
 
@@ -2649,9 +2647,17 @@ document.addEventListener('click', (ev) => {
       el.setAttribute('aria-expanded', String(open));
       const act = el.querySelector('.at-act');
       if (act) act.firstChild.textContent = open ? 'Hide' : 'Show';
-      const panel = el.parentElement.querySelector('.at-panel');
-      panel?.classList.toggle('is-open', open);
-      panel?.toggleAttribute('inert', !open);
+      setFold(el.parentElement.querySelector('.at-panel'), open);
+      return;
+    }
+    case 'toggle-block': {
+      const key = el.dataset.key;
+      const open = state.dayClosed.has(key);
+      if (open) state.dayClosed.delete(key); else state.dayClosed.add(key);
+      store.set('pg.dayClosed', JSON.stringify([...state.dayClosed]));
+      el.setAttribute('aria-expanded', String(open));
+      el.closest('.block')?.classList.toggle('is-closed', !open);
+      setFold(el.nextElementSibling, open);
       return;
     }
     case 'toggle-finished':
@@ -2707,6 +2713,8 @@ document.addEventListener('touchstart', () => {}, { passive: true });
 dialog.addEventListener('close', () => { if (state.dirty) { state.dirty = false; render(); } });
 
 document.addEventListener('keydown', (ev) => {
+  // Enter or Space on a folding section heading works like a tap.
+  if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches?.('.block-toggle')) { ev.preventDefault(); ev.target.click(); return; }
   if (!state.plan || dialog.open) return;
   if (ev.target.closest('input, textarea')) return;
   if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
