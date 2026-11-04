@@ -95,7 +95,7 @@ The **Exams** page also logs grades per class: below the upcoming exams is a Gra
 | exam_id | The exam row it was logged from, if any |
 | notes, updated | Free text; managed by the app |
 
-Each class shows its average out of 100: weighted by the grades that have a weight, with how much of the course those weights cover, or the plain mean when no grade has a weight. Exams finished in the last 60 days with no grade are listed under **To log**, and a finished exam card shows its grade or a **Log grade** button. Grades are not exported to the calendar. If the tab is missing, the app adds it with the first grade.
+Each class shows its average out of 100: weighted by the grades that have a weight, with how much of the course those weights cover, or the plain mean when no grade has a weight. An exam counts as finished once it has ended: its time plus its `minutes`, or two hours when `minutes` is empty (the end of its day when it has no time). Exams finished in the last 60 days with no grade are listed under **To log**, and a finished exam card shows its grade or a **Log grade** button. Grades are not exported to the calendar. If the tab is missing, the app adds it with the first grade.
 
 ## Archive
 

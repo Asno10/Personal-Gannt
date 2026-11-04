@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=26';
-import * as cal from './calendar.js?v=26';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=26';
+import * as api from './sheets.js?v=27';
+import * as cal from './calendar.js?v=27';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=27';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -59,7 +59,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '26';
+const BUILD = '27';
 
 async function checkForUpdate() {
   try {
@@ -723,7 +723,7 @@ function gradeCourses() {
 function examsToGrade() {
   const tk = todayKey();
   const from = addDays(tk, -60);
-  return state.plan.exams.filter((e) => e.start < tk && e.start >= from && !gradeOfExam(e.id)).sort((a, b) => b.start.localeCompare(a.start));
+  return state.plan.exams.filter((e) => examFinished(e) && e.start >= from && !gradeOfExam(e.id)).sort((a, b) => b.start.localeCompare(a.start));
 }
 
 // What to prefill when logging an exam's grade.
@@ -1030,6 +1030,7 @@ function render() {
   for (const [v] of VIEWS) dirty.add(v);
   renderPage(state.view);
   renderStatus();
+  scheduleExamEnd();
   updateTabs();
   if (fresh) goToPage(state.view, false);
   renderLater();
@@ -1253,8 +1254,34 @@ function coversDay(item, k) {
   return item.start && item.end ? item.start <= k && k <= item.end : item.start === k;
 }
 
+// An exam is finished once it has ended: its start time plus its minutes, or
+// two hours when the minutes are not given (exams last at most about that
+// long). An exam with no time counts as finished when its day is over.
+const EXAM_DEFAULT_MIN = 120;
+function examEndsAt(e) {
+  const d = dateOfKey(e.start);
+  if (!e.time) { d.setDate(d.getDate() + 1); return d.getTime(); }
+  const [h, m] = e.time.split(':').map(Number);
+  d.setHours(h, m + (e.minutes > 0 ? e.minutes : EXAM_DEFAULT_MIN), 0, 0);
+  return d.getTime();
+}
+const examFinished = (e) => Boolean(e.start) && Date.now() >= examEndsAt(e);
+
+// From today on, exams that have already ended today are left out.
 function nextExams(fromKey) {
-  return state.plan.exams.filter((e) => e.start && e.start >= fromKey).sort((a, b) => (a.start + a.time).localeCompare(b.start + b.time));
+  const tk = todayKey();
+  return state.plan.exams.filter((e) => e.start && e.start >= fromKey && !(fromKey <= tk && examFinished(e))).sort((a, b) => (a.start + a.time).localeCompare(b.start + b.time));
+}
+
+// Draws the pages again when the next exam ends, so it moves to Finished
+// (and To log) while the app stays open.
+let examEndTimer = 0;
+function scheduleExamEnd() {
+  clearTimeout(examEndTimer);
+  const now = Date.now();
+  const next = Math.min(...state.plan.exams.filter((e) => e.start).map(examEndsAt).filter((t) => t > now));
+  if (!Number.isFinite(next)) return;
+  examEndTimer = setTimeout(render, Math.min(next - now + 1000, 12 * 3600 * 1000));
 }
 
 // ---------- Day view ----------
@@ -1908,8 +1935,8 @@ function scrollTimelineToToday(smooth) {
 function renderExams() {
   const tk = todayKey();
   const exams = [...state.plan.exams].filter((e) => e.start).sort((a, b) => (a.start + a.time).localeCompare(b.start + b.time));
-  const upcoming = exams.filter((e) => e.start >= tk);
-  const past = exams.filter((e) => e.start < tk);
+  const upcoming = exams.filter((e) => !examFinished(e));
+  const past = exams.filter((e) => examFinished(e));
   return `
     <h1 class="page-title">Exams</h1>
     <div class="exam-grid">${upcoming.map((e) => examCard(e, tk)).join('') || '<p class="empty">No upcoming exams in the sheet.</p>'}</div>
@@ -1933,6 +1960,7 @@ function examCard(e, tk) {
   const span = firstK ? keysBetween(firstK, e.start).map((key) => ({ key })) : [];
   const max = Math.max(1, ...span.map((d) => Math.max(toNumber(study?.cells[d.key]), loggedOn(e.subject, d.key))));
   const n = daysBetween(tk, e.start);
+  const fin = examFinished(e);
   const rooms = (((e.notes + ' ' + e.task).match(/rooms?\s+([\d,\s]+)/i) || [])[1] || '').trim().replace(/,$/, '');
   // Leave out "Midterm" (they all are); keep names such as "YDS/2 (ÖSYM)".
   const base = e.task.replace(/,?\s*rooms?\s+[\d,\s]+$/i, '').trim();
@@ -1941,12 +1969,12 @@ function examCard(e, tk) {
   const when = [kind, `${dowLabel(e.start)} ${shortLabel(e.start)}`, e.time, rooms ? `Rooms ${rooms}` : ''].filter(Boolean);
   const pct = total ? Math.min(100, Math.round((studied / total) * 100)) : 0;
   const gap = dueSoFar - studied;
-  const pace = !study || n < 0 ? '' : gap > 0.25 ? `<span class="pace-t is-behind">${fmtH(gap)} h behind</span>` : studied >= total && total ? '<span class="pace-t is-good">Plan covered</span>' : dueSoFar > 0 || studied > 0 ? `<span class="pace-t is-good">${gap < -0.25 ? `${fmtH(-gap)} h ahead` : 'On plan'}</span>` : '';
+  const pace = !study || fin ? '' : gap > 0.25 ? `<span class="pace-t is-behind">${fmtH(gap)} h behind</span>` : studied >= total && total ? '<span class="pace-t is-good">Plan covered</span>' : dueSoFar > 0 || studied > 0 ? `<span class="pace-t is-good">${gap < -0.25 ? `${fmtH(-gap)} h ahead` : 'On plan'}</span>` : '';
   const open = state.examOpen?.has(e.subject);
   const reads = readings().filter((r) => r.subject === e.subject && (!r.start || r.start <= e.start));
   const readsDone = reads.filter((r) => r.status.status === 'done').length;
   const readsLate = reads.filter((r) => isOverdue(r)).length;
-  const count = n < 0 ? '<b class="is-word">Done</b>' : n === 0 ? '<b class="is-word">Today</b>' : `<b>${n}</b><small>${n === 1 ? 'day' : 'days'}</small>`;
+  const count = fin ? '<b class="is-word">Done</b>' : n === 0 ? '<b class="is-word">Today</b>' : `<b>${n}</b><small>${n === 1 ? 'day' : 'days'}</small>`;
   return `
     <article class="exam ${open ? 'is-open' : ''}" style="--c:${subjectVar(e.subject)}" ${study ? `data-action="toggle-exam" data-subject="${esc(e.subject)}" aria-expanded="${Boolean(open)}"` : ''}>
       <header class="exam-top">
@@ -1954,13 +1982,13 @@ function examCard(e, tk) {
           <h2 class="exam-subject">${esc(e.subject)}</h2>
           <p class="exam-when">${when.map(esc).join(' · ')}</p>
         </div>
-        <div class="exam-count ${n <= 3 && n >= 0 ? 'is-near' : ''}" aria-label="${n < 0 ? 'Finished' : n === 0 ? 'Today' : plural(n, 'day') + ' left'}">${count}</div>
+        <div class="exam-count ${n <= 3 && !fin ? 'is-near' : ''}" aria-label="${fin ? 'Finished' : n === 0 ? 'Today' : plural(n, 'day') + ' left'}">${count}</div>
       </header>
       ${study ? `
         <div class="progress-bar" role="img" aria-label="${fmtH(studied)} of ${fmtH(total)} planned hours studied"><span style="width:${pct}%"></span></div>
         <div class="exam-line">
           <span class="exam-hours"><b>${fmtH(studied)}</b> of ${fmtH(total)} h${pace ? ' · ' + pace : ''}</span>
-          ${n >= 0 ? `<button class="log-btn" data-action="log-hours" data-subject="${esc(e.subject)}" data-day="${tk}">${ICON.plus}Log</button>` : ''}
+          ${!fin ? `<button class="log-btn" data-action="log-hours" data-subject="${esc(e.subject)}" data-day="${tk}">${ICON.plus}Log</button>` : ''}
         </div>
         ${reads.length ? `<p class="exam-read">Reading <b>${readsDone}</b> of ${reads.length} done${readsLate ? ` · <span class="pace-t is-behind">${readsLate} behind</span>` : ''}</p>` : ''}
         ${open && span.length ? `
@@ -1975,7 +2003,7 @@ function examCard(e, tk) {
             </div>
             <div class="spark-axis"><span>${esc(shortLabel(firstK))}</span><span class="spark-key"><i class="k-plan"></i>Planned<i class="k-done"></i>Studied</span><span>Exam</span></div>
           </div>` : ''}` : ''}
-      ${n < 0 ? examGradeLine(e) : ''}
+      ${fin ? examGradeLine(e) : ''}
     </article>`;
 }
 
