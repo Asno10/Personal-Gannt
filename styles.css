@@ -1015,29 +1015,6 @@ button.event { width: 100%; text-align: left; }
 .arch-warn { color: var(--alert); }
 .btn-danger-fill { background: var(--alert) !important; border-color: var(--alert) !important; color: #fff !important; }
 
-/* ---------- Grades (build 25) ---------- */
-.grade-card { --c: var(--ink-3); display: grid; gap: 10px; padding: 16px 16px 8px; }
-.grade-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.grade-avg { flex: none; display: flex; align-items: baseline; gap: 4px; line-height: 1; }
-.grade-avg b { font: 700 28px/1 var(--font-c); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; color: var(--c); }
-.grade-avg small { font: 500 13px/1 var(--font); color: var(--ink-2); }
-.grade-card .progress-bar { height: 4px; border-radius: 2px; background: var(--fill); overflow: hidden; }
-.grade-card .progress-bar span { display: block; height: 100%; background: var(--c); border-radius: 2px; }
-.grade-list { list-style: none; margin: 0; padding: 0; }
-.grade-list > li { border-bottom: var(--hair) solid var(--rule); }
-.grade-row { width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px 0; text-align: left; }
-.grade-row:active { opacity: 0.55; }
-.grade-score { flex: none; display: flex; align-items: baseline; gap: 3px; font-variant-numeric: tabular-nums; }
-.grade-score b { font: 600 17px/1 var(--font); color: var(--ink); }
-.grade-score small { font-size: 13px; color: var(--ink-2); }
-.grade-card .add-btn { min-height: 44px; margin-top: 0; }
-.grade-todo { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: var(--hair) solid var(--rule); }
-.grade-todo:last-child { border-bottom: 0; }
-.grade-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--c); }
-#view-exams .btn-grade { margin: 4px 0 8px; color: var(--accent); background: var(--panel); border: 0; }
-.section-title { font: 700 22px/1.2 var(--font); margin: 6px 0 12px; }
-#view-exams .grade-card { margin-bottom: 14px; }
-
 /* Finished exams fold (build 28) */
 .fold-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 44px; margin: 12px 0 8px; padding: 0 4px; text-align: left; }
 .fold-head span { color: var(--ink-3); font-weight: 500; }

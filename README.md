@@ -1,6 +1,6 @@
 # Personal Gantt
 
-A small web app over the "Personal Gantt" Google Sheet: a day view with study hours, readings, tasks, calendar events and the next exam countdown, a scrollable timeline, exam cards with a grades log, and a task list. Changes are written straight back to the sheet, and the whole plan is mirrored in a "Personal Gantt" Google calendar.
+A small web app over the "Personal Gantt" Google Sheet: a day view with study hours, readings, tasks, calendar events and the next exam countdown, a scrollable timeline, exam cards and a task list. Changes are written straight back to the sheet, and the whole plan is mirrored in a "Personal Gantt" Google calendar.
 
 The site holds code only. The sheet and calendars are read in the browser after Google sign-in, so the data stays private even though the site is public.
 
@@ -80,22 +80,9 @@ Any task, reading, event or exam, any day of planned study (from the subject's h
 
 The daily scheduled run moves every pending flag to a later date that fits (for `study`, it moves that day's planned hours in the row's `days` to a later day before the subject's exam), then marks it `done` with a one-line result, or `skipped` with the reason. The Tasks page lists pending flags and those handled in the last three days. Removing a flag sets it to `cancelled`.
 
-## Grades
+## Exams
 
-The **Exams** page also logs grades per class: below the upcoming exams is a Grades section, then the finished exams, folded until tapped open. Each grade is a row in the **Grades** tab:
-
-| Column | Meaning |
-|---|---|
-| id | `g-` and 6 characters |
-| course | The class, such as `Calculus I` (matches the exam and study subject names) |
-| name, kind | What was graded (`Midterm 1`), and its kind: `Midterm`, `Final`, `Quiz`, `Homework`, `Project`, `Lab` or `Other` |
-| date | `YYYY-MM-DD` |
-| score, out_of | The score and the maximum (100 if empty) |
-| weight | Its share of the course grade, in percent, from the syllabus (optional) |
-| exam_id | The exam row it was logged from, if any |
-| notes, updated | Free text; managed by the app |
-
-Each class shows its average out of 100: weighted by the grades that have a weight, with how much of the course those weights cover, or the plain mean when no grade has a weight. An exam counts as finished once it has ended: two hours after its time, whatever `minutes` says (the end of its day when it has no time); the exam's edit sheet has no length field. Exams finished in the last 60 days with no grade are listed under **To log**, and a finished exam card shows its grade or a **Log grade** button. Grades are not exported to the calendar. If the tab is missing, the app adds it with the first grade.
+The **Exams** page shows the upcoming exams, then the finished ones, folded until tapped open. An exam counts as finished two hours after its time, whatever `minutes` says (at the end of its day when it has no time); the exam's edit sheet has no length field.
 
 ## Archive
 

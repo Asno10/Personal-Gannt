@@ -198,14 +198,12 @@ const q = (name) => `'${name.replace(/'/g, "''")}'`;
 export const a1 = (sheet, cell) => `${q(sheet)}!${cell}`;
 
 export async function loadAll() {
-  const { items, settings, reschedule, grades = 'Grades' } = CONFIG.sheets;
+  const { items, settings, reschedule } = CONFIG.sheets;
   const get = (names) => call('/values:batchGet?' + names.map((r) => 'ranges=' + encodeURIComponent(q(r))).join('&') + '&valueRenderOption=FORMATTED_VALUE&majorDimension=ROWS');
-  // The Reschedule and Grades tabs are optional: if one is missing, the app
-  // still loads (a missing Grades tab is null, and is added with the first grade).
-  const [meta, shown, gradeRows] = await Promise.all([
+  // The Reschedule tab is optional: if it is missing, the app still loads.
+  const [meta, shown] = await Promise.all([
     call('?fields=properties.title,sheets.properties(sheetId,title)'),
     get([items, settings, reschedule]).catch(() => get([items, settings])),
-    get([grades]).then((r) => r.valueRanges[0].values || []).catch((e) => { if (e instanceof AuthError) throw e; return null; }),
   ]);
   const ids = Object.fromEntries(meta.sheets.map((s) => [s.properties.title, s.properties.sheetId]));
   if (ids[items] === undefined) throw new Error(`The sheet has no "${items}" tab.`);
@@ -215,7 +213,6 @@ export async function loadAll() {
     items: shown.valueRanges[0].values || [],
     settings: shown.valueRanges[1].values || [],
     reschedule: shown.valueRanges[2] ? (shown.valueRanges[2].values || []) : null,
-    grades: gradeRows,
   };
 }
 
