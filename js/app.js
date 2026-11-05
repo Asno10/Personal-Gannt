@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=39';
-import * as cal from './calendar.js?v=39';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=39';
+import * as api from './sheets.js?v=40';
+import * as cal from './calendar.js?v=40';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=40';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -69,7 +69,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '39';
+const BUILD = '40';
 
 async function checkForUpdate() {
   try {
@@ -2344,12 +2344,12 @@ function tvSheet() {
   const base = new URL('tv.html', location.href).href;
   const code = link ? btoa(JSON.stringify({ u: link.url, k: link.key })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') : '';
   openSheet(`
-    ${sheetHead('TV view', 'Today, the next exam and the week ahead on a large screen, in the style of iOS StandBy.')}
+    ${sheetHead('TV view', 'Your day, the next exam and the week ahead on a large screen.')}
     ${link
       ? `<p class="dlg-sub">Copy the TV link, then open it in the browser on the TV (with the Google TV app on your phone you can paste it with the phone's keyboard). The TV connects without a Google sign-in and stays connected.</p>
          <p class="dlg-sub">The link carries the app's access key, so anyone holding it can read and change your plan. Use it only on your own screen. <b>Personal Gantt &gt; Reset app access</b> in the sheet cancels it.</p>`
       : `<p class="dlg-sub">This device is not set up to stay signed in, so there is no TV link yet. Run <b>Personal Gantt &gt; Connect the app</b> in the sheet and reload, or sign in with Google on the TV instead.</p>`}
-    <p class="dlg-sub">On the TV remote: Left and Right turn the widget stack, Up and Down switch night mode (automatic from 23:00 to 07:00, on or off), OK goes fullscreen and reloads.</p>
+    <p class="dlg-sub">On the TV remote: Up and Down switch night mode (automatic from 23:00 to 07:00, on or off), OK goes fullscreen and reloads.</p>
     <div class="dlg-actions">
       <a class="btn btn-quiet" href="${esc(base)}" target="_blank" rel="noopener">Open here</a><span class="spacer"></span>
       ${link ? '<button type="button" class="btn btn-primary" data-copy-tv>Copy TV link</button>' : '<button class="btn btn-primary" value="save">Done</button>'}

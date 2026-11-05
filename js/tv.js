@@ -1,32 +1,35 @@
-// TV view: a read-only, large-screen display of the plan in the style of
-// iOS StandBy. A big clock on black, a Today widget (study and tasks) and a
-// rotating stack (next exam, the week ahead, the agenda). It never writes to
-// the sheet or the calendar; the app and the sheet's Apps Script do that.
+// TV view: a read-only, large-screen display of the plan for a TV or any
+// spare screen. A clock with a plain-language summary of the day, the next
+// exam's countdown, three columns (study, tasks, the week), and across the
+// bottom the day drawn as a trajectory from morning to midnight, with the
+// day's events plotted on it and a marker where the day stands now. It never
+// writes to the sheet or the calendar; the app and the sheet's Apps Script
+// do that.
 //
 // Signing in: like the app, it stays signed in through the sheet's Apps
 // Script web app. A TV gets the web app address and key either from one
 // normal Google sign-in (then read from the Settings tab), or from the
-// pairing link the app makes under Account > TV view (tv.html#pair=...),
-// which avoids signing in with a remote. The link is removed from the
-// address bar as soon as it is read.
+// pairing link the app makes under Account > Show the plan on a TV
+// (tv.html#pair=...), which avoids signing in with a remote. The link is
+// removed from the address bar as soon as it is read.
 //
-// Remote: Left and Right turn the stack, Up and Down switch night mode
-// (auto, on, off), OK goes fullscreen and reloads the plan.
+// Remote: Up and Down switch night mode (auto, on, off), OK goes fullscreen
+// and reloads the plan.
 
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=39';
-import * as cal from './calendar.js?v=39';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=39';
+import * as api from './sheets.js?v=40';
+import * as cal from './calendar.js?v=40';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=40';
 
-const BUILD = '39';
+const BUILD = '40';
 const REFRESH_MS = 2 * 60 * 1000;
 const CAL_MS = 5 * 60 * 1000;
-const STACK_MS = 14 * 1000;
 const EXAM_MIN = 120; // an exam counts as over two hours after it starts
 const NIGHT_FROM = 23 * 60; // auto night mode, minutes after midnight
 const NIGHT_TO = 7 * 60;
+const DAY_FROM = 6 * 60; // the trajectory starts at 06:00 unless something is earlier
 const CAL_HIDE = /#holiday@|classroom/;
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -42,6 +45,8 @@ const pad = (n) => String(n).padStart(2, '0');
 const minOf = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ''); return m ? +m[1] * 60 + +m[2] : null; };
 const hhmm = (m) => `${pad(Math.floor(m / 60) % 24)}:${pad(m % 60)}`;
 const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
+const clip = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
+const remPx = () => parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
 
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
@@ -54,7 +59,6 @@ const state = {
   loadedAt: 0,
   error: '',
   cal: { calendars: [], byDay: {}, at: 0 },
-  stack: 0,
   night: store.get('pg.tvNight') || 'auto', // auto | on | off
   minute: '',
 };
@@ -75,14 +79,12 @@ function pairFromHash() {
 
 function gate(message = '') {
   root.innerHTML = `
+    ${sky()}
     <main class="gate">
-      <div class="gate-card">
-        <img class="gate-icon" src="icon-192.png" alt="">
-        <h1>Personal Gantt</h1>
-        <p>This screen shows your plan once it is connected. In the app on your phone, open <b>Account</b>, then <b>TV view</b>, copy the TV link and open it in this browser. Or sign in with Google here.</p>
-        ${message ? `<p class="gate-error" role="alert">${esc(message)}</p>` : ''}
-        <button class="gate-btn" id="sign-in" autofocus>Sign in with Google</button>
-      </div>
+      <h1>Personal Gantt</h1>
+      <p>To show your plan here, open <b>Account</b> in the app on your phone, choose <b>Show the plan on a TV</b>, copy the TV link and open it in this browser. You can also sign in with Google on this screen.</p>
+      ${message ? `<p class="gate-error" role="alert">${esc(message)}</p>` : ''}
+      <button class="gate-btn" id="sign-in" autofocus>Sign in with Google</button>
     </main>`;
   const b = $('#sign-in');
   b.addEventListener('click', async () => {
@@ -97,7 +99,7 @@ function gate(message = '') {
 }
 
 function loading(text) {
-  root.innerHTML = `<main class="gate"><p class="gate-loading">${esc(text)}</p></main>`;
+  root.innerHTML = `${sky()}<main class="gate"><p class="gate-loading">${esc(text)}</p></main>`;
 }
 
 // ---------- Data ----------
@@ -112,7 +114,6 @@ async function start() {
   setInterval(tick, 1000);
   setInterval(() => refresh(), REFRESH_MS);
   setInterval(() => loadCalendar(), CAL_MS);
-  setInterval(() => turnStack(1), STACK_MS);
   setInterval(checkForUpdate, 30 * 60 * 1000);
   keepAwake();
 }
@@ -162,7 +163,7 @@ async function loadCalendar() {
 const P = () => state.plan;
 const ofType = (t) => P().byType(t);
 const subjectIndex = (name) => P().study.map((s) => s.subject).indexOf(name);
-const colorOf = (name) => { const i = subjectIndex(name); return i >= 0 ? `var(--s${i % 8})` : 'var(--accent)'; };
+const colorOf = (name) => { const i = subjectIndex(name); return i >= 0 ? `var(--s${i % 8})` : 'var(--haze)'; };
 const plannedDays = (t) => Object.entries(t.cells).filter(([, v]) => /x/i.test(v)).map(([d]) => d).sort();
 const taskDue = (t) => plannedDays(t)[0] || t.start || null;
 const tasksOn = (k) => ofType('task').filter((t) => (plannedDays(t).length ? plannedDays(t).includes(k) : t.start === k));
@@ -187,16 +188,16 @@ const nextExams = () => P().exams.filter((e) => e.start && Date.now() < examEnds
 // tasks and readings, and the other calendars.
 function agenda(k) {
   const out = [];
-  const add = (time, minutes, end, title, sub, color, kind) => {
+  const add = (time, minutes, end, title, color, kind) => {
     const s = minOf(time);
     const e = end ? minOf(end) : s != null && minutes ? s + minutes : null;
-    out.push({ start: s, end: e, title, sub, color, kind });
+    out.push({ start: s, end: e, title, color, kind });
   };
-  for (const e of ofType('event')) if (coversDay(e, k)) add(e.start === k ? e.time : '', e.minutes, '', e.title, e.subject || 'Event', e.subject ? colorOf(e.subject) : 'var(--accent)', 'event');
-  for (const x of P().exams) if (x.start === k) add(x.time, EXAM_MIN, '', x.title || `${x.subject} exam`, x.title && x.subject ? `Exam, ${x.subject}` : 'Exam', colorOf(x.subject), 'exam');
-  for (const t of tasksOn(k)) if (t.time && isOpen(t)) add(t.time, t.minutes, '', t.title, 'Task', 'var(--ink-2)', 'task');
-  for (const r of readingsOn(k)) if (r.time && isOpen(r)) add(r.time, r.minutes, '', r.title, 'Reading', colorOf(r.subject), 'reading');
-  for (const c of state.cal.byDay[k] || []) add(c.time, 0, c.endTime, c.title, c.calName, c.color || 'var(--ink-3)', 'cal');
+  for (const e of ofType('event')) if (coversDay(e, k)) add(e.start === k ? e.time : '', e.minutes, '', e.title, 'var(--starlight)', 'event');
+  for (const x of P().exams) if (x.start === k) add(x.time, EXAM_MIN, '', x.title || `${x.subject} exam`, colorOf(x.subject), 'exam');
+  for (const t of tasksOn(k)) if (t.time && isOpen(t)) add(t.time, t.minutes, '', t.title, 'var(--haze)', 'task');
+  for (const r of readingsOn(k)) if (r.time && isOpen(r)) add(r.time, r.minutes, '', r.title, colorOf(r.subject), 'reading');
+  for (const c of state.cal.byDay[k] || []) add(c.time, 0, c.endTime, c.title, c.color || 'var(--haze)', 'cal');
   return out.sort((a, b) => (a.start ?? -1) - (b.start ?? -1));
 }
 
@@ -205,15 +206,16 @@ function upNext() {
   const now = nowMin();
   const today = agenda(todayKey()).filter((a) => a.start != null);
   const current = today.find((a) => a.start <= now && now < (a.end ?? a.start + 30));
-  if (current) return { ...current, when: 'Now', detail: current.end ? `until ${hhmm(current.end)}` : '' };
+  if (current) return `Now, ${current.end ? `until ${hhmm(current.end)}` : `since ${hhmm(current.start)}`}: ${current.title}.`;
   const later = today.find((a) => a.start > now);
   if (later) {
     const n = later.start - now;
-    return { ...later, when: hhmm(later.start), detail: n < 60 ? `in ${plural(n, 'minute')}` : n < 180 ? `in ${Math.floor(n / 60)} h ${n % 60 ? `${n % 60} min` : ''}`.trim() : '' };
+    const soon = n < 60 ? `, in ${plural(n, 'minute')}` : '';
+    return `Next at ${hhmm(later.start)}${soon}: ${later.title}.`;
   }
   const tomorrow = agenda(addDays(todayKey(), 1)).find((a) => a.start != null);
-  if (tomorrow) return { ...tomorrow, when: `Tomorrow ${hhmm(tomorrow.start)}`, detail: '' };
-  return null;
+  if (tomorrow) return `Nothing else today. Tomorrow at ${hhmm(tomorrow.start)}: ${tomorrow.title}.`;
+  return 'Nothing else on the calendar today.';
 }
 
 // ---------- Rendering ----------
@@ -225,28 +227,46 @@ function isNight() {
   return m >= NIGHT_FROM || m < NIGHT_TO;
 }
 
+// A faint field of stars, the same every time (seeded), drawn once.
+let skyHtml = '';
+function sky() {
+  if (skyHtml) return skyHtml;
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const stars = Array.from({ length: 140 }, () => {
+    const r = rnd() < 0.85 ? 0.6 + rnd() * 0.6 : 1.2 + rnd() * 0.8;
+    return `<circle cx="${(rnd() * 1600).toFixed(1)}" cy="${(rnd() * 900).toFixed(1)}" r="${r.toFixed(2)}" opacity="${(0.15 + rnd() * 0.45).toFixed(2)}"/>`;
+  }).join('');
+  skyHtml = `<div class="sky" aria-hidden="true"><svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">${stars}</svg></div>`;
+  return skyHtml;
+}
+
 function render() {
   if (!state.plan) return;
   document.documentElement.classList.toggle('is-night', isNight());
-  if (!$('#sb')) {
+  if (!$('#board')) {
     root.innerHTML = `
-      <main class="sb" id="sb">
-        <section class="col-clock" id="w-clock"></section>
-        <section class="widget w-today" id="w-today"></section>
-        <section class="widget w-stack" id="w-stack">
-          <div class="stack-pages" id="stack-pages"></div>
-          <div class="stack-dots" id="stack-dots" aria-hidden="true"></div>
-        </section>
+      ${sky()}
+      <main class="board" id="board">
+        <section class="hero" id="hero"></section>
+        <section class="col col-exam" id="exam"></section>
+        <section class="col col-study" id="study"></section>
+        <section class="col col-tasks" id="tasks"></section>
+        <section class="col col-week" id="week"></section>
+        <section class="day" id="day"></section>
       </main>`;
   }
   state.minute = new Date().toISOString().slice(0, 16);
-  put('#w-clock', renderClock());
-  put('#w-today', renderToday(), fitToday);
-  renderStack();
+  put('#hero', renderHero());
+  put('#exam', renderExam());
+  put('#study', renderStudy(), fitList);
+  put('#tasks', renderTasks(), fitList);
+  put('#week', renderWeek());
+  put('#day', renderDay());
   shiftForBurnIn();
 }
 
-// Replaces a widget's contents only when they changed, so nothing flickers.
+// Replaces a section's contents only when they changed, so nothing flickers.
 function put(sel, html, after) {
   const el = $(sel);
   if (!el || el._html === html) return;
@@ -255,107 +275,13 @@ function put(sel, html, after) {
   if (after) after(el);
 }
 
-function renderClock() {
-  const d = new Date();
-  const next = upNext();
-  const k = todayKey();
-  const ex = ofType('exercise').filter((e) => e.cells[k]).map((e) => String(e.cells[k]));
-  const EX = { A: 'Workout A', B: 'Workout B', L: 'Light workout', W: 'Weigh-in' };
-  const status = state.error
-    ? `<span class="is-alert">Offline</span>, showing the plan from ${hhmm(new Date(state.loadedAt).getHours() * 60 + new Date(state.loadedAt).getMinutes())}`
-    : '';
-  return `
-    <p class="clk-date"><span class="clk-dow">${esc(d.toLocaleDateString('en-GB', { weekday: 'long' }))}</span> ${d.getDate()} ${esc(d.toLocaleDateString('en-GB', { month: 'long' }))}</p>
-    <p class="clk-time" aria-label="${hhmm(nowMin())}">${pad(d.getHours())}<span class="clk-colon">:</span>${pad(d.getMinutes())}</p>
-    ${next ? `
-      <div class="next" style="--c:${esc(next.color)}">
-        <span class="next-bar"></span>
-        <div class="next-body">
-          <p class="next-when">${esc(next.when)}${next.detail ? `<span>${esc(next.detail)}</span>` : ''}</p>
-          <p class="next-title">${esc(next.title)}</p>
-        </div>
-      </div>` : `<div class="next is-empty"><p class="next-title">Nothing else on the calendar today</p></div>`}
-    ${ex.length ? `<p class="clk-chips">${ex.map((v) => `<span class="chip">${esc(EX[v.toUpperCase()] || v)}</span>`).join('')}</p>` : ''}
-    ${status ? `<p class="clk-status">${status}</p>` : ''}`;
-}
-
-function ring(frac, label) {
-  const r = 42;
-  const c = 2 * Math.PI * r;
-  const f = Math.max(0, Math.min(1, frac));
-  return `
-    <div class="ring ${f >= 1 ? 'is-full' : ''}">
-      <svg viewBox="0 0 100 100" aria-hidden="true">
-        <circle class="ring-track" cx="50" cy="50" r="${r}"/>
-        <circle class="ring-fill" cx="50" cy="50" r="${r}" stroke-dasharray="${(c * f).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 50 50)"/>
-      </svg>
-      <span class="ring-label">${label}</span>
-    </div>`;
-}
-
-function renderToday() {
-  const k = todayKey();
-  const planned = studyOn(k);
-  const extra = P().study.filter((s) => !planned.some((x) => x.item === s) && loggedOn(s.subject, k) > 0).map((item) => ({ item, hours: 0 }));
-  const study = [...planned, ...extra];
-  const total = planned.reduce((n, s) => n + s.hours, 0);
-  const logged = study.reduce((n, s) => n + loggedOn(s.item.subject, k), 0);
-
-  const tasks = [...tasksOn(k), ...readingsOn(k)];
-  const open = tasks.filter(isOpen);
-  const done = tasks.filter((t) => !isOpen(t));
-  const overdue = [...ofType('task'), ...ofType('reading')].filter((t) => isOpen(t) && taskDue(t) && taskDue(t) < k && !tasks.includes(t));
-  const taskLine = (t, cls, meta) => `
-    <li class="task ${cls}">
-      <span class="tick" aria-hidden="true"></span>
-      <span class="task-title">${esc(t.title)}</span>
-      ${meta ? `<span class="task-meta">${esc(meta)}</span>` : ''}
-    </li>`;
-  const metaOf = (t) => [t.time, t.type === 'reading' ? 'Reading' : '', t.priority === 'P1' ? 'P1' : ''].filter(Boolean).join(', ');
-
-  return `
-    <header class="w-head">
-      <div>
-        <p class="w-label">Today</p>
-        <p class="w-title is-big">${total ? `${fmtH(total)}<small> h</small>` : logged ? `${fmtH(logged)}<small> h</small>` : 'Free'}</p>
-        <p class="w-sub">${total ? `planned<br>${fmtH(logged)} h studied` : logged ? 'studied' : open.length ? 'No study planned' : 'Rest well'}</p>
-      </div>
-      ${total ? ring(logged / total, logged >= total ? '<b>Done</b>' : `<b>${Math.round((logged / total) * 100)}</b><small>%</small>`) : ''}
-    </header>
-    ${study.length ? `
-      <ul class="study">
-        ${study.map(({ item, hours }) => {
-          const l = loggedOn(item.subject, k);
-          const pct = hours ? Math.min(100, (l / hours) * 100) : 100;
-          return `
-            <li style="--c:${colorOf(item.subject)}">
-              <div class="study-top"><span class="dot"></span><span class="study-name">${esc(item.subject)}</span><span class="study-h">${l ? `${fmtH(l)}<small> / </small>` : ''}${fmtH(hours || l)}<small> h</small></span></div>
-              <div class="bar"><span style="width:${pct.toFixed(1)}%"></span></div>
-            </li>`;
-        }).join('')}
-      </ul>` : ''}
-    <div class="tasks-wrap">
-      <p class="w-section">Tasks<span>${tasks.length ? `${done.length} of ${tasks.length} done` : 'None planned'}</span></p>
-      <ul class="tasks" id="task-list">
-        ${open.map((t) => taskLine(t, '', metaOf(t))).join('')}
-        ${overdue.map((t) => taskLine(t, 'is-late', `Overdue, ${shortDate(taskDue(t))}`)).join('')}
-        ${done.map((t) => taskLine(t, 'is-done', '')).join('')}
-        ${!tasks.length && !overdue.length ? '<li class="task is-empty"><span class="task-title">Nothing on the list for today</span></li>' : ''}
-      </ul>
-      <p class="more" id="task-more" hidden></p>
-    </div>`;
-}
-
-// Hides task rows that do not fit, last first, and says how many are left out.
-function fitToday(el) {
-  const list = $('#task-list', el);
-  const more = $('#task-more', el);
-  const wrap = $('.tasks-wrap', el);
-  if (!list || !wrap) return;
-  const rows = $$('.task', list);
+// Hides list rows that do not fit, last first, and says how many are left out.
+function fitList(el) {
+  const rows = $$('.fit > li', el);
+  const more = $('.more', el);
+  if (!rows.length || !more) return;
   let hidden = 0;
-  const over = () => el.scrollHeight > el.clientHeight + 1;
-  for (let i = rows.length - 1; i > 0 && over(); i--) {
+  for (let i = rows.length - 1; i > 0 && el.scrollHeight > el.clientHeight + 1; i--) {
     rows[i].hidden = true;
     hidden++;
     more.hidden = false;
@@ -363,135 +289,235 @@ function fitToday(el) {
   }
 }
 
-function stackPages() {
-  const pages = [];
+function greeting() {
+  const h = new Date().getHours();
+  return h < 5 ? 'Good night' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+}
+
+function renderHero() {
+  const d = new Date();
+  const k = todayKey();
+  const total = studyOn(k).reduce((n, s) => n + s.hours, 0);
+  const open = [...tasksOn(k), ...readingsOn(k)].filter(isOpen).length;
+  const parts = [total ? `${plural(+fmtH(total), 'hour')} of study` : '', open ? plural(open, 'open task') : ''].filter(Boolean);
+  const day = parts.length ? `${parts.join(' and ')} today.` : 'A free day.';
+  const status = state.error ? `<p class="status">Offline. Showing the plan from ${new Date(state.loadedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}.</p>` : '';
+  return `
+    <div class="hero-time">
+      <p class="date">${esc(d.toLocaleDateString('en-GB', { weekday: 'long' }))}, ${d.getDate()} ${esc(d.toLocaleDateString('en-GB', { month: 'long' }))}</p>
+      <p class="clock">${pad(d.getHours())}<span class="colon">:</span>${pad(d.getMinutes())}</p>
+    </div>
+    <div class="hero-text">
+      <p class="summary">${esc(greeting())}. ${esc(day)}</p>
+      <p class="summary is-next">${esc(upNext())}</p>
+      ${status}
+    </div>`;
+}
+
+function renderExam() {
   const exams = nextExams();
-  if (exams.length) pages.push(['exam', renderExamPage(exams)]);
-  pages.push(['week', renderWeekPage()]);
-  pages.push(['agenda', renderAgendaPage()]);
-  return pages;
-}
-
-function renderStack() {
-  const pages = stackPages();
-  const box = $('#stack-pages');
-  const sig = pages.map(([, h]) => h).join('');
-  if (box._html !== sig) {
-    box.innerHTML = pages.map(([key, html], i) => `<div class="page page-${key}" data-i="${i}">${html}</div>`).join('');
-    box._html = sig;
-    $('#stack-dots').innerHTML = pages.map((_, i) => `<i data-i="${i}"></i>`).join('');
-  }
-  state.stack = ((state.stack % pages.length) + pages.length) % pages.length;
-  $$('.page', box).forEach((p) => p.classList.toggle('is-on', +p.dataset.i === state.stack));
-  $$('#stack-dots i').forEach((d) => d.classList.toggle('is-on', +d.dataset.i === state.stack));
-}
-
-function turnStack(dir) {
-  if (!$('#stack-pages')) return;
-  state.stack += dir;
-  renderStack();
-}
-
-function renderExamPage(exams) {
+  if (!exams.length) return `${colHead('Next exam', '')}<p class="empty">No exams ahead.</p>`;
   const k = todayKey();
   const lead = exams[0];
   const n = daysBetween(k, lead.start);
   const studyRow = P().study.find((s) => s.subject === lead.subject);
-  const plannedPrep = studyRow ? Object.entries(studyRow.cells).filter(([d]) => d <= lead.start).reduce((s, [, v]) => s + toNumber(v), 0) : 0;
-  const loggedPrep = Object.entries(logRow(lead.subject)?.cells || {}).filter(([d]) => d <= lead.start).reduce((s, [, v]) => s + toNumber(v), 0);
-  const left = (e) => { const d = daysBetween(k, e.start); return d === 0 ? 'Today' : d === 1 ? 'Tomorrow' : `${d} days`; };
-  const later = exams.slice(1, 4);
+  const planned = studyRow ? Object.entries(studyRow.cells).filter(([d]) => d <= lead.start).reduce((s, [, v]) => s + toNumber(v), 0) : 0;
+  const done = Object.entries(logRow(lead.subject)?.cells || {}).filter(([d]) => d <= lead.start).reduce((s, [, v]) => s + toNumber(v), 0);
+  const then = exams[1];
+  const when = [n === 0 ? 'Today' : shortDate(lead.start), lead.time].filter(Boolean).join(', ');
   return `
-    <p class="w-label is-signal">${n === 0 ? 'Exam today' : 'Next exam'}</p>
-    <div class="exam-lead" style="--c:${colorOf(lead.subject)}">
-      <p class="exam-subject">${esc(lead.subject || lead.title)}</p>
-      <p class="exam-when">${esc([n === 0 ? 'Today' : shortDate(lead.start), lead.time].filter(Boolean).join(', '))}</p>
-    </div>
-    <p class="countdown">${n === 0 ? `<b class="is-word">${lead.time ? esc(lead.time) : 'Today'}</b>` : `<b>${n}</b><small>${n === 1 ? 'day' : 'days'}</small>`}</p>
-    ${plannedPrep ? `
-      <div class="prep">
-        <p><span>Preparation</span><b>${fmtH(loggedPrep)} of ${fmtH(plannedPrep)} h</b></p>
-        <div class="bar" style="--c:${colorOf(lead.subject)}"><span style="width:${Math.min(100, (loggedPrep / plannedPrep) * 100).toFixed(1)}%"></span></div>
-      </div>` : ''}
-    ${later.length ? `
-      <ul class="later">
-        ${later.map((e) => `<li style="--c:${colorOf(e.subject)}"><span class="dot"></span><span class="later-name">${esc(e.subject || e.title)}</span><span class="later-in">${esc(left(e))}</span></li>`).join('')}
-      </ul>` : ''}`;
+    ${colHead('Next exam', '')}
+    <div class="exam-body" style="--c:${colorOf(lead.subject)}">
+      <p class="exam-name">${esc(lead.subject || lead.title)}</p>
+      <p class="exam-when">${esc(when)}</p>
+      <p class="exam-count">${n === 0 ? '<b class="is-word">Today</b>' : `<b>${n}</b><span>${n === 1 ? 'day' : 'days'}</span>`}</p>
+      ${planned ? `
+        <p class="exam-prep">${fmtH(done)} of ${fmtH(planned)} h prepared</p>
+        <p class="sub-bar"><span style="width:${Math.min(100, (done / planned) * 100).toFixed(1)}%"></span></p>` : ''}
+      ${then ? `<p class="exam-then">Then ${esc(then.subject || then.title)} in ${plural(daysBetween(k, then.start), 'day')}</p>` : ''}
+    </div>`;
 }
 
-function renderWeekPage() {
+const colHead = (title, meta) => `<header class="col-head"><h2>${esc(title)}</h2><span>${esc(meta)}</span></header>`;
+
+function renderStudy() {
+  const k = todayKey();
+  const planned = studyOn(k);
+  const extra = P().study.filter((s) => !planned.some((x) => x.item === s) && loggedOn(s.subject, k) > 0).map((item) => ({ item, hours: 0 }));
+  const rows = [...planned, ...extra];
+  const total = planned.reduce((n, s) => n + s.hours, 0);
+  const logged = rows.reduce((n, s) => n + loggedOn(s.item.subject, k), 0);
+  return `
+    ${colHead('Study', total ? `${fmtH(logged)} of ${fmtH(total)} h` : logged ? `${fmtH(logged)} h` : '')}
+    ${rows.length ? `
+      <ul class="fit subjects">
+        ${rows.map(({ item, hours }) => {
+          const l = loggedOn(item.subject, k);
+          const pct = hours ? Math.min(100, (l / hours) * 100) : 100;
+          return `
+            <li style="--c:${colorOf(item.subject)}">
+              <p class="sub-line"><span class="sub-name">${esc(item.subject)}</span><span class="sub-h">${l ? `${fmtH(l)} / ` : ''}${fmtH(hours || l)} h</span></p>
+              <p class="sub-bar"><span style="width:${pct.toFixed(1)}%"></span></p>
+            </li>`;
+        }).join('')}
+      </ul>` : '<p class="empty">No study planned today.</p>'}
+    <p class="more" hidden></p>`;
+}
+
+function renderTasks() {
+  const k = todayKey();
+  const tasks = [...tasksOn(k), ...readingsOn(k)];
+  const open = tasks.filter(isOpen);
+  const done = tasks.filter((t) => !isOpen(t));
+  const overdue = [...ofType('task'), ...ofType('reading')].filter((t) => isOpen(t) && taskDue(t) && taskDue(t) < k && !tasks.includes(t));
+  const row = (t, cls, meta) => `
+    <li class="${cls}">
+      <span class="tick" aria-hidden="true"></span>
+      <span class="task-body"><span class="task-title">${esc(t.title)}</span>${meta ? `<span class="task-meta">${meta}</span>` : ''}</span>
+    </li>`;
+  const metaOf = (t) => [t.time ? esc(t.time) : '', t.type === 'reading' ? 'Reading' : '', t.priority === 'P1' ? '<em>Priority 1</em>' : ''].filter(Boolean).join(', ');
+  return `
+    ${colHead('Tasks', tasks.length ? `${done.length} of ${tasks.length} done` : '')}
+    ${tasks.length || overdue.length ? `
+      <ul class="fit tasks">
+        ${open.map((t) => row(t, '', metaOf(t))).join('')}
+        ${overdue.map((t) => row(t, 'is-late', `Overdue since ${esc(shortDate(taskDue(t)))}`)).join('')}
+        ${done.map((t) => row(t, 'is-done', '')).join('')}
+      </ul>` : '<p class="empty">Nothing on the list today.</p>'}
+    <p class="more" hidden></p>`;
+}
+
+function renderWeek() {
   const k = todayKey();
   const days = Array.from({ length: 7 }, (_, i) => addDays(k, i));
   const totals = days.map(studyHoursOn);
   const max = Math.max(1, ...totals);
   const sum = totals.reduce((a, b) => a + b, 0);
-  const examDays = new Map(P().exams.map((e) => [e.start, e]));
-  const openTasks = days.reduce((n, d) => n + tasksOn(d).filter(isOpen).length, 0);
-  const examsAhead = days.filter((d) => examDays.has(d)).length;
+  const examDays = new Set(P().exams.map((e) => e.start));
   return `
-    <p class="w-label">The week ahead</p>
-    <p class="w-title">${sum ? `${fmtH(sum)} h of study` : 'No study planned'}</p>
-    <p class="w-sub">${[plural(openTasks, 'open task'), examsAhead ? plural(examsAhead, 'exam') : ''].filter(Boolean).join(', ')}</p>
+    ${colHead('This week', sum ? `${fmtH(sum)} h` : '')}
     <div class="week">
       ${days.map((d, i) => {
-        const segs = studyOn(d);
-        const ex = examDays.get(d);
         const dt = dateOfKey(d);
         return `
-          <div class="wk-day ${i === 0 ? 'is-today' : ''} ${dt.getDay() % 6 === 0 ? 'is-weekend' : ''}">
+          <div class="wk ${i === 0 ? 'is-today' : ''}">
             <span class="wk-h">${totals[i] ? fmtH(totals[i]) : ''}</span>
-            <div class="wk-col">
-              <div class="wk-stack" style="height:${((totals[i] / max) * 100).toFixed(1)}%">
-                ${segs.map((s) => `<span style="--c:${colorOf(s.item.subject)};flex:${s.hours}"></span>`).join('')}
+            <div class="wk-track">
+              <div class="wk-bar" style="height:${((totals[i] / max) * 100).toFixed(1)}%">
+                ${studyOn(d).map((s) => `<span style="--c:${colorOf(s.item.subject)};flex:${s.hours}"></span>`).join('')}
               </div>
             </div>
-            <span class="wk-exam">${ex ? `<i style="--c:${colorOf(ex.subject)}"></i>` : ''}</span>
-            <span class="wk-dow">${esc(dt.toLocaleDateString('en-GB', { weekday: 'short' }).slice(0, 2))}</span>
+            <span class="wk-exam">${examDays.has(d) ? '<i title="Exam"></i>' : ''}</span>
+            <span class="wk-day">${esc(dt.toLocaleDateString('en-GB', { weekday: 'short' }))}</span>
             <span class="wk-num">${dt.getDate()}</span>
           </div>`;
       }).join('')}
     </div>`;
 }
 
-function renderAgendaPage() {
+// The day as a trajectory: an arch from morning to midnight. The part already
+// flown is drawn solid, the rest dashed; events sit on the arch with their
+// time and title, and a glowing marker shows where the day is now.
+function renderDay() {
+  const el = $('#day');
+  const R = remPx();
+  const W = Math.max(400, Math.round(el?.clientWidth || 1600));
+  const H = Math.max(120, Math.round(el?.clientHeight || 180));
   const k = todayKey();
-  const now = nowMin();
-  const today = agenda(k).filter((a) => a.start == null || (a.end ?? a.start + 30) > now);
-  const tomorrow = agenda(addDays(k, 1));
-  const row = (a) => `
-    <li style="--c:${esc(a.color)}">
-      <span class="ag-time">${a.start == null ? 'All day' : hhmm(a.start)}</span>
-      <span class="ag-bar"></span>
-      <span class="ag-body"><span class="ag-title">${esc(a.title)}</span>${a.sub ? `<span class="ag-sub">${esc(a.sub)}</span>` : ''}</span>
-    </li>`;
-  const block = (label, list, limit) => `
-    <p class="w-section">${label}<span>${list.length ? plural(list.length, 'item') : ''}</span></p>
-    ${list.length ? `<ul class="agenda">${list.slice(0, limit).map(row).join('')}</ul>${list.length > limit ? `<p class="more">and ${list.length - limit} more</p>` : ''}` : '<p class="ag-empty">Nothing scheduled</p>'}`;
+  const items = agenda(k);
+  const timed = items.filter((a) => a.start != null);
+  const allDay = items.filter((a) => a.start == null);
+  const from = Math.min(DAY_FROM, ...timed.map((a) => Math.floor(a.start / 60) * 60));
+  const to = 24 * 60;
+  const padX = 1.2 * R;
+  const base = H - 2.6 * R; // where the arch meets the hour line
+  const amp = base - 7.4 * R; // leaves room above the top for two rows of labels
+  const xOf = (m) => padX + ((Math.min(Math.max(m, from), to) - from) / (to - from)) * (W - 2 * padX);
+  const yOf = (m) => base - amp * Math.sin(Math.PI * ((Math.min(Math.max(m, from), to) - from) / (to - from)));
+  const path = (a, b) => {
+    const pts = [];
+    for (let m = a; m <= b; m += 5) pts.push(`${xOf(m).toFixed(1)},${yOf(m).toFixed(1)}`);
+    pts.push(`${xOf(b).toFixed(1)},${yOf(b).toFixed(1)}`);
+    return 'M' + pts.join(' L');
+  };
+  const now = Math.min(Math.max(nowMin(), from), to);
+
+  const ticks = [];
+  for (let h = Math.ceil(from / 60); h <= 24; h++) {
+    if (h % 3) continue;
+    ticks.push(`<text class="tick-label" x="${xOf(h * 60).toFixed(1)}" y="${(base + 1.9 * R).toFixed(1)}" text-anchor="middle">${pad(h % 24 === 0 && h ? 24 : h)}:00</text>`);
+    ticks.push(`<line class="tick" x1="${xOf(h * 60).toFixed(1)}" x2="${xOf(h * 60).toFixed(1)}" y1="${(base + 0.25 * R).toFixed(1)}" y2="${(base + 0.6 * R).toFixed(1)}"/>`);
+  }
+
+  // Each label takes the first of three lanes where it does not touch the
+  // label before it: just above the arch, inside it, or higher above.
+  const charW = 0.55 * 1.5 * R;
+  const LANES = [['above', -2.6], ['below', 2.1], ['high', -5.6]];
+  const laneEnd = LANES.map(() => -Infinity);
+  const marks = timed.map((a) => {
+    const x = xOf(a.start);
+    const y = yOf(a.start);
+    const title = clip(a.title, 26);
+    const w = Math.max(5, title.length) * charW;
+    const li = LANES.findIndex((_, i) => x - w / 2 > laneEnd[i] + R);
+    const side = li < 0 ? 'none' : LANES[li][0];
+    if (li >= 0) laneEnd[li] = x + w / 2;
+    const past = (a.end ?? a.start + 30) <= nowMin();
+    const ty = li < 0 ? 0 : y + LANES[li][1] * R;
+    const anchor = x < W * 0.08 ? 'start' : x > W * 0.92 ? 'end' : 'middle';
+    return `
+      <g class="mark ${past ? 'is-past' : ''}" style="--c:${esc(a.color)}">
+        ${a.end ? `<path class="span" d="${path(a.start, Math.min(a.end, to))}"/>` : ''}
+        <circle class="dot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(0.42 * R).toFixed(1)}"/>
+        ${side === 'none' ? '' : `
+          <text class="mark-time" x="${x.toFixed(1)}" y="${ty.toFixed(1)}" text-anchor="${anchor}">${hhmm(a.start)}</text>
+          <text class="mark-title" x="${x.toFixed(1)}" y="${(ty + 1.55 * R).toFixed(1)}" text-anchor="${anchor}">${esc(title)}</text>`}
+      </g>`;
+  }).join('');
+
+  const nx = xOf(now);
+  const ny = yOf(now);
   return `
-    <p class="w-label">Agenda</p>
-    ${block('Rest of today', today, 4)}
-    ${block('Tomorrow', tomorrow, 3)}`;
+    <svg class="arc" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" aria-label="Today from ${hhmm(from)} to midnight">
+      <defs>
+        <linearGradient id="flown" x1="0" x2="1" y1="0" y2="0">
+          <stop offset="0" style="stop-color:var(--ember);stop-opacity:0.1"/>
+          <stop offset="1" style="stop-color:var(--ember);stop-opacity:0.95"/>
+        </linearGradient>
+        <radialGradient id="glow">
+          <stop offset="0" style="stop-color:var(--ember);stop-opacity:0.5"/>
+          <stop offset="1" style="stop-color:var(--ember);stop-opacity:0"/>
+        </radialGradient>
+      </defs>
+      <line class="horizon" x1="${padX}" x2="${W - padX}" y1="${base}" y2="${base}"/>
+      ${ticks.join('')}
+      <path class="ahead" d="${path(now, to)}"/>
+      ${now > from ? `<path class="flown" d="${path(from, now)}"/>` : ''}
+      ${marks}
+      <circle cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="${(2.4 * R).toFixed(1)}" fill="url(#glow)"/>
+      <circle class="now" cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="${(0.55 * R).toFixed(1)}"/>
+    </svg>
+    ${allDay.length ? `<p class="all-day">All day: ${allDay.slice(0, 2).map((a) => esc(clip(a.title, 48))).join(', ')}${allDay.length > 2 ? `, and ${allDay.length - 2} more` : ''}</p>` : ''}
+    ${!timed.length ? '<p class="day-empty">No events on the calendar today</p>' : ''}`;
 }
 
 // ---------- Screen care ----------
 
 // Moves everything by a few pixels each minute so a TV left on all day does
-// not keep the same pixels lit (as StandBy does).
+// not keep the same pixels lit.
 const SHIFTS = [[0, 0], [3, 2], [6, 0], [3, -2], [0, -3], [-3, -2], [-6, 0], [-3, 2]];
 function shiftForBurnIn() {
-  const sb = $('#sb');
-  if (!sb) return;
+  const b = $('#board');
+  if (!b) return;
   const [x, y] = SHIFTS[Math.floor(Date.now() / 60000) % SHIFTS.length];
-  sb.style.transform = `translate(${x}px, ${y}px)`;
+  b.style.transform = `translate(${x}px, ${y}px)`;
 }
 
 // Asks the TV not to start its screensaver while this page is showing.
-let wakeLock = null;
 async function keepAwake() {
   try {
     if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
-    wakeLock = await navigator.wakeLock.request('screen');
-    wakeLock.addEventListener?.('release', () => { wakeLock = null; });
+    await navigator.wakeLock.request('screen');
   } catch {}
 }
 
@@ -520,11 +546,9 @@ function setNight(mode) {
 }
 
 document.addEventListener('keydown', (ev) => {
-  if (!state.plan || !$('#sb')) return;
+  if (!state.plan || !$('#board')) return;
   const modes = ['auto', 'on', 'off'];
   switch (ev.key) {
-    case 'ArrowLeft': ev.preventDefault(); return turnStack(-1);
-    case 'ArrowRight': ev.preventDefault(); return turnStack(1);
     case 'ArrowUp': ev.preventDefault(); return setNight(modes[(modes.indexOf(state.night) + 1) % 3]);
     case 'ArrowDown': ev.preventDefault(); return setNight(modes[(modes.indexOf(state.night) + 2) % 3]);
     case 'Enter':
@@ -536,9 +560,11 @@ document.addEventListener('keydown', (ev) => {
   }
 });
 
-// A tap or click on a touch screen turns the stack, like a swipe on StandBy.
-document.addEventListener('click', (ev) => {
-  if (ev.target.closest('#w-stack')) turnStack(1);
+// The trajectory is drawn to the screen's size, so it is redrawn on a resize.
+let resizeTimer = 0;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { const d = $('#day'); if (d) d._html = ''; render(); }, 200);
 });
 
 // The pointer hides itself after a few still seconds.

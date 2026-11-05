@@ -94,10 +94,10 @@ Raise the number in `version.json`, `BUILD` in `js/app.js` and the `?v=` values 
 
 ## TV view
 
-`tv.html` is a read-only display for a TV or any spare screen, in the style of iOS StandBy: a large clock with what is on now or next, a Today widget (planned and studied hours per subject, and the day's tasks with overdue ones in red), and a stack that turns every 14 seconds between the next exam (with a countdown and preparation hours), the week ahead (planned study per day, coloured by subject, with exam days marked) and the agenda for the rest of today and tomorrow. It reloads the sheet every 2 minutes and the other calendars every 5, and never writes to either.
+`tv.html` is a read-only display for a TV or any spare screen. Across the top: the date and a large clock, and a plain sentence about the day (study hours and open tasks) with what is on now or next. Below it, four columns: the next exam with its countdown and preparation hours, today's study per subject (planned against studied), today's tasks with overdue ones in red, and the week ahead as bars of planned study coloured by subject, with exam days marked. Along the bottom, the day is drawn as an arc from morning to midnight: the part already past is solid, the day's events sit on it with their times, and a glowing marker shows where the day is now. It reloads the sheet every 2 minutes and the other calendars every 5, and never writes to either.
 
 To connect a TV, open **Account > Show the plan on a TV** in the app on a device that stays signed in, tap **Copy TV link**, and open that link in the TV's browser (on Google TV, a browser such as TV Bro or Fully Kiosk Browser; the Google TV app on a phone can paste it with the phone's keyboard). The link carries the stay-signed-in key, so treat it like the Settings tab; it is removed from the address bar once read. Signing in with Google on the TV works too.
 
 - **Night mode**: from 23:00 to 07:00 everything turns dim red on black. `tv.html?night=on`, `off` or `auto` sets it, as do Up and Down on the remote.
-- **Remote**: Left and Right turn the stack; OK goes fullscreen and reloads.
+- **Remote**: OK goes fullscreen and reloads.
 - **Screen care**: the layout moves a few pixels every minute against burn-in, and the page asks the TV not to start its screensaver.
