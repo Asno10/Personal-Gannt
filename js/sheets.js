@@ -52,6 +52,10 @@ function keepToken() {
 
 export const canStaySignedIn = () => Boolean(ls.get(K_URL) && ls.get(K_KEY));
 
+// The web app address and key this device stays signed in with, for handing
+// to another screen (the TV view's pairing link). Null when not set up.
+export const stayLink = () => (canStaySignedIn() ? { url: ls.get(K_URL), key: ls.get(K_KEY) } : null);
+
 // Saves the web app address and key found in Settings. Returns true if they changed.
 export function rememberStaySignedIn(url, key) {
   url = String(url || '').trim();

@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=38';
-import * as cal from './calendar.js?v=38';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=38';
+import * as api from './sheets.js?v=39';
+import * as cal from './calendar.js?v=39';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=39';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -69,7 +69,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '38';
+const BUILD = '39';
 
 async function checkForUpdate() {
   try {
@@ -2314,6 +2314,7 @@ function accountMenu() {
         <label class="cal-opt" style="--c:${esc(x.color || 'var(--ink-3)')}"><input type="checkbox" name="cal" value="${esc(x.id)}" ${isShown(x) ? 'checked' : ''}><span class="cal-dot"></span>${esc(x.name)}</label>`).join('')}
       </div>` : ''}
     <p><a href="https://docs.google.com/spreadsheets/d/${encodeURIComponent(CONFIG.spreadsheetId)}/edit" target="_blank" rel="noopener">Open the sheet in Google Sheets</a></p>
+    <p><button class="link" value="tv" formnovalidate>Show the plan on a TV</button></p>
     <div class="dlg-actions">
       <button class="btn btn-quiet" value="signout" formnovalidate>Sign out</button><span class="spacer"></span>
       <button class="btn btn-quiet" value="sync" formnovalidate>Sync now</button>
@@ -2321,6 +2322,7 @@ function accountMenu() {
     </div>`,
   (d, which) => {
     if (which === 'signout') return signOut();
+    if (which === 'tv') return tvSheet();
     if (which === 'sync') { state.cal.status = state.cal.status === 'off' ? 'idle' : state.cal.status; syncCalendar({ force: true }).then(() => loadCalendarEvents({ force: true })); return; }
   }, {
     onOpen(form) {
@@ -2329,6 +2331,38 @@ function accountMenu() {
         const ids = [...form.querySelectorAll('input[name=cal]:checked')].map((x) => x.value);
         store.set('pg.calShown', JSON.stringify(ids));
         loadCalendarEvents({ force: true });
+      });
+    },
+  });
+}
+
+// The TV view (tv.html): how to open it, and a pairing link that carries
+// this device's stay-signed-in address and key, so the TV connects without a
+// Google sign-in. The copy happens in the tap itself, as browsers require.
+function tvSheet() {
+  const link = api.stayLink();
+  const base = new URL('tv.html', location.href).href;
+  const code = link ? btoa(JSON.stringify({ u: link.url, k: link.key })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') : '';
+  openSheet(`
+    ${sheetHead('TV view', 'Today, the next exam and the week ahead on a large screen, in the style of iOS StandBy.')}
+    ${link
+      ? `<p class="dlg-sub">Copy the TV link, then open it in the browser on the TV (with the Google TV app on your phone you can paste it with the phone's keyboard). The TV connects without a Google sign-in and stays connected.</p>
+         <p class="dlg-sub">The link carries the app's access key, so anyone holding it can read and change your plan. Use it only on your own screen. <b>Personal Gantt &gt; Reset app access</b> in the sheet cancels it.</p>`
+      : `<p class="dlg-sub">This device is not set up to stay signed in, so there is no TV link yet. Run <b>Personal Gantt &gt; Connect the app</b> in the sheet and reload, or sign in with Google on the TV instead.</p>`}
+    <p class="dlg-sub">On the TV remote: Left and Right turn the widget stack, Up and Down switch night mode (automatic from 23:00 to 07:00, on or off), OK goes fullscreen and reloads.</p>
+    <div class="dlg-actions">
+      <a class="btn btn-quiet" href="${esc(base)}" target="_blank" rel="noopener">Open here</a><span class="spacer"></span>
+      ${link ? '<button type="button" class="btn btn-primary" data-copy-tv>Copy TV link</button>' : '<button class="btn btn-primary" value="save">Done</button>'}
+    </div>`,
+  () => {}, {
+    onOpen(form) {
+      form.querySelector('[data-copy-tv]')?.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(`${base}#pair=${code}`);
+          closeSheet(() => toast('TV link copied'));
+        } catch {
+          toast('Could not copy the link');
+        }
       });
     },
   });
