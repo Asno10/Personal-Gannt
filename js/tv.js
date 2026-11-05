@@ -19,11 +19,11 @@
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=40';
-import * as cal from './calendar.js?v=40';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=40';
+import * as api from './sheets.js?v=41';
+import * as cal from './calendar.js?v=41';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=41';
 
-const BUILD = '40';
+const BUILD = '41';
 const REFRESH_MS = 2 * 60 * 1000;
 const CAL_MS = 5 * 60 * 1000;
 const EXAM_MIN = 120; // an exam counts as over two hours after it starts
@@ -408,7 +408,7 @@ function renderWeek() {
               </div>
             </div>
             <span class="wk-exam">${examDays.has(d) ? '<i title="Exam"></i>' : ''}</span>
-            <span class="wk-day">${esc(dt.toLocaleDateString('en-GB', { weekday: 'short' }))}</span>
+            <span class="wk-day">${esc(dt.toLocaleDateString('en-GB', { weekday: 'narrow' }))}</span>
             <span class="wk-num">${dt.getDate()}</span>
           </div>`;
       }).join('')}

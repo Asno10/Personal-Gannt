@@ -1,6 +1,7 @@
 /* TV view. A night sky over a day drawn as a trajectory: deep indigo, faint
-   stars, starlight text and one warm ember for "now". Sora carries the
-   numbers and text, Instrument Serif italic the date and section names.
+   stars, starlight text and one warm ember for "now". The type is Apple's
+   system font (SF Pro) where there is one, and Inter, its close match,
+   everywhere else, such as on a Google TV.
    Every size is in rem, and 1rem is a hundredth of the screen width (or of
    16:9 of its height on a taller screen), so the layout scales to any TV. */
 
@@ -15,8 +16,7 @@
   --flare: #ff7b6b;
   --s0: #6fa8ff; --s1: #5fd8e6; --s2: #9c8cff; --s3: #ff7fa0;
   --s4: #6ee7a0; --s5: #d58cff; --s6: #f4c66a; --s7: #c3cce0;
-  --sans: "Sora", system-ui, -apple-system, sans-serif;
-  --serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", "Helvetica Neue", system-ui, sans-serif;
   color-scheme: dark;
   font-size: min(1vw, 1.7778vh);
 }
@@ -84,11 +84,11 @@ b, em { font-weight: inherit; font-style: inherit; }
 /* ---------- Clock and summary ---------- */
 
 .hero-time { flex: none; }
-.date { font: italic 400 3.1rem/1 var(--serif); color: var(--haze); }
+.date { font: 500 2.7rem/1 var(--sans); letter-spacing: -0.01em; color: var(--haze); }
 .clock {
-  margin: 0.4rem 0 -0.6rem -0.5rem;
+  margin: 0.6rem 0 -0.6rem -0.5rem;
   font: 200 11rem/0.95 var(--sans);
-  letter-spacing: -0.05em;
+  letter-spacing: -0.04em;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -110,7 +110,7 @@ b, em { font-weight: inherit; font-style: inherit; }
 .exam-count { margin: 0 0 0.6rem; display: flex; align-items: baseline; gap: 0.8rem; color: var(--ember); }
 .exam-count b { font: 200 7.4rem/0.95 var(--sans); letter-spacing: -0.05em; font-variant-numeric: tabular-nums; text-shadow: 0 0 4rem rgb(255 178 94 / 0.25); }
 .exam-count b.is-word { font-size: 6rem; }
-.exam-count span { font: italic 400 2.8rem var(--serif); }
+.exam-count span { font: 400 2.4rem var(--sans); letter-spacing: -0.01em; }
 .exam-prep { font: 300 1.5rem var(--sans); color: var(--haze); }
 .exam-body .sub-bar { margin-top: 0.6rem; }
 .exam-then { margin-top: 1.4rem; font: 300 1.5rem var(--sans); color: var(--haze-2); }
@@ -127,7 +127,7 @@ b, em { font-weight: inherit; font-style: inherit; }
   border-top: 1px solid var(--dusk);
 }
 .col-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-bottom: 1.5rem; }
-.col-head h2 { flex: none; font: italic 400 2.7rem/1 var(--serif); white-space: nowrap; }
+.col-head h2 { flex: none; font: 600 2.3rem/1 var(--sans); letter-spacing: -0.02em; white-space: nowrap; }
 .col-head span { min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 300 1.5rem var(--sans); color: var(--haze); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .empty { font: 300 1.7rem var(--sans); color: var(--haze-2); }
 .more { margin-top: 0.4rem; font: 300 1.4rem var(--sans); color: var(--haze-2); }
@@ -170,7 +170,7 @@ b, em { font-weight: inherit; font-style: inherit; }
 .wk-bar span { min-height: 0.3rem; background: var(--c); }
 .wk-exam { height: 1.5rem; display: grid; place-items: center; }
 .wk-exam i { width: 0.75rem; height: 0.75rem; background: var(--ember); transform: rotate(45deg); box-shadow: 0 0 0.9rem var(--ember); }
-.wk-day { font: italic 400 1.45rem/1 var(--serif); color: var(--haze); }
+.wk-day { font: 500 1.4rem/1 var(--sans); color: var(--haze); }
 .wk-num { margin-top: 0.3rem; font: 300 1.55rem/1.1 var(--sans); font-variant-numeric: tabular-nums; }
 .wk.is-today .wk-day, .wk.is-today .wk-num { color: var(--ember); }
 .wk.is-today .wk-num { font-weight: 500; }
@@ -197,11 +197,11 @@ b, em { font-weight: inherit; font-style: inherit; }
 /* ---------- Sign-in and messages ---------- */
 
 .gate { position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: center; padding: 0 12rem; max-width: 92rem; }
-.gate h1 { font: italic 400 7rem/1 var(--serif); margin-bottom: 2.4rem; }
+.gate h1 { font: 700 6rem/1 var(--sans); letter-spacing: -0.03em; margin-bottom: 2.4rem; }
 .gate p { max-width: 56rem; margin-bottom: 2.6rem; font: 300 2.1rem/1.5 var(--sans); color: var(--haze); }
 .gate p b { color: var(--starlight); font-weight: 400; }
 .gate-error { color: var(--flare) !important; }
-.gate-loading { font: italic 400 3.4rem var(--serif) !important; color: var(--haze); animation: breathe 1.8s ease-in-out infinite alternate; }
+.gate-loading { font: 500 3rem var(--sans) !important; color: var(--haze); animation: breathe 1.8s ease-in-out infinite alternate; }
 @keyframes breathe { from { opacity: 0.4; } to { opacity: 1; } }
 .gate-btn {
   align-self: flex-start;
