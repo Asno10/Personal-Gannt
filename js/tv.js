@@ -13,22 +13,25 @@
 // (tv.html#pair=...), which avoids signing in with a remote. The link is
 // removed from the address bar as soon as it is read.
 //
-// Remote: Up and Down switch night mode (auto, on, off), OK goes fullscreen
-// and reloads the plan.
+// Pages: Left and Right switch between the day and the plan for the next two
+// weeks (a Gantt chart); it returns to the day after 5 idle minutes.
+// Night mode is automatic (22:30 to 07:00). Up turns it on or off until the
+// next automatic switch, Down goes back to automatic. OK goes fullscreen and
+// reloads the plan.
 
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=45';
-import * as cal from './calendar.js?v=45';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=45';
-import { initSky, setPlace, weatherLine, placeName } from './sky.js?v=45';
+import * as api from './sheets.js?v=46';
+import * as cal from './calendar.js?v=46';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=46';
+import { initSky, setPlace, weatherLine, placeName } from './sky.js?v=46';
 
-const BUILD = '45';
+const BUILD = '46';
 const REFRESH_MS = 2 * 60 * 1000;
 const CAL_MS = 5 * 60 * 1000;
 const EXAM_MIN = 120; // an exam counts as over two hours after it starts
-const NIGHT_FROM = 23 * 60; // auto night mode, minutes after midnight
+const NIGHT_FROM = 22 * 60 + 30; // automatic night mode, minutes after midnight
 const NIGHT_TO = 7 * 60;
 const DAY_FROM = 6 * 60; // the trajectory starts at 06:00 unless something is earlier
 const CAL_HIDE = /#holiday@|classroom/;
@@ -60,7 +63,8 @@ const state = {
   loadedAt: 0,
   error: '',
   cal: { calendars: [], byDay: {}, at: 0 },
-  night: store.get('pg.tvNight') || 'auto', // auto | on | off
+  night: null, // a manual override { on, until }, or null for automatic
+  page: 0,
   minute: '',
 };
 
@@ -250,6 +254,14 @@ function examEndsAt(e) {
 }
 const nextExams = () => P().exams.filter((e) => e.start && Date.now() < examEndsAt(e)).sort((a, b) => (a.start + a.time).localeCompare(b.start + b.time));
 
+// An event's colour: its subject's, when it has one or is a study block
+// named after a subject ("Study: YDS, reading"); otherwise white.
+function eventColor(e) {
+  const named = /^study:\s*(.+)$/i.exec(e.title || '')?.[1] || '';
+  const subject = P().study.map((x) => x.subject).find((n) => n === e.subject || (named && named.startsWith(n)));
+  return subject ? colorOf(subject) : 'var(--starlight)';
+}
+
 // Everything on a day that has a time or fills the day: events, exams, timed
 // tasks and readings, and the other calendars.
 function agenda(k) {
@@ -259,7 +271,7 @@ function agenda(k) {
     const e = end ? minOf(end) : s != null && minutes ? s + minutes : null;
     out.push({ start: s, end: e, title, color, kind });
   };
-  for (const e of ofType('event')) if (coversDay(e, k)) add(e.start === k ? e.time : '', e.minutes, '', e.title, 'var(--starlight)', 'event');
+  for (const e of ofType('event')) if (coversDay(e, k)) add(e.start === k ? e.time : '', e.minutes, '', e.title, eventColor(e), 'event');
   for (const x of P().exams) if (x.start === k) add(x.time, EXAM_MIN, '', x.title || `${x.subject} exam`, colorOf(x.subject), 'exam');
   for (const t of tasksOn(k)) if (t.time && isOpen(t)) add(t.time, t.minutes, '', t.title, 'var(--haze)', 'task');
   for (const r of readingsOn(k)) if (r.time && isOpen(r)) add(r.time, r.minutes, '', r.title, colorOf(r.subject), 'reading');
@@ -286,11 +298,19 @@ function upNext() {
 
 // ---------- Rendering ----------
 
+const autoNight = (d = new Date()) => { const m = d.getHours() * 60 + d.getMinutes(); return m >= NIGHT_FROM || m < NIGHT_TO; };
+
+// The next time automatic night mode switches on or off.
+function nextSwitch() {
+  const now = new Date();
+  const at = (days, min) => { const d = new Date(now); d.setDate(d.getDate() + days); d.setHours(Math.floor(min / 60), min % 60, 0, 0); return d.getTime(); };
+  return [at(0, NIGHT_TO), at(0, NIGHT_FROM), at(1, NIGHT_TO)].find((t) => t > now.getTime());
+}
+
 function isNight() {
-  if (state.night === 'on') return true;
-  if (state.night === 'off') return false;
-  const m = nowMin();
-  return m >= NIGHT_FROM || m < NIGHT_TO;
+  if (state.night && Date.now() < state.night.until) return state.night.on;
+  state.night = null;
+  return autoNight();
 }
 
 function render() {
@@ -298,14 +318,19 @@ function render() {
   document.documentElement.classList.toggle('is-night', isNight());
   if (!$('#board')) {
     root.innerHTML = `
-        <main class="board" id="board">
+      <div class="pages" id="pages">
+        <main class="page board" id="board">
         <section class="hero" id="hero"></section>
         <section class="col col-exam" id="exam"></section>
         <section class="col col-study" id="study"></section>
         <section class="col col-tasks" id="tasks"></section>
         <section class="col col-week" id="week"></section>
         <section class="day" id="day"></section>
-      </main>`;
+        </main>
+        <main class="page plan" id="plan"></main>
+      </div>
+      <p class="page-dots" id="page-dots" aria-hidden="true"><i></i><i></i></p>`;
+    showPage(state.page, false);
   }
   state.minute = new Date().toISOString().slice(0, 16);
   put('#hero', renderHero());
@@ -314,6 +339,7 @@ function render() {
   put('#tasks', renderTasks(), fitList);
   put('#week', renderWeek());
   put('#day', renderDay());
+  put('#plan', renderPlan());
   shiftForBurnIn();
 }
 
@@ -476,6 +502,164 @@ function renderWeek() {
       </ul>` : ''}`;
 }
 
+// ---------- The plan page: a Gantt chart of the next two weeks ----------
+
+const PLAN_DAYS = 14;
+const LABEL_REM = 21;
+const EX_NAMES = { A: 'A', B: 'B', L: 'Light', W: 'Weigh-in' };
+let measureCtx = null;
+function textWidth(text, weight, sizePx) {
+  measureCtx ||= document.createElement('canvas').getContext('2d');
+  const family = getComputedStyle(document.documentElement).getPropertyValue('--sans') || 'sans-serif';
+  measureCtx.font = `${weight} ${sizePx}px ${family}`;
+  return measureCtx.measureText(text).width;
+}
+
+function renderPlan() {
+  const R = remPx();
+  const k = todayKey();
+  const days = Array.from({ length: PLAN_DAYS }, (_, i) => addDays(k, i));
+  const last = days[PLAN_DAYS - 1];
+  const idx = (d) => (d < k ? 0 : d > last ? PLAN_DAYS - 1 : days.indexOf(d));
+  const pct = (n) => `${((n / PLAN_DAYS) * 100).toFixed(3)}%`;
+  const d0 = dateOfKey(k);
+  const d1 = dateOfKey(last);
+  const monthLong = (d) => d.toLocaleDateString('en-GB', { month: 'long' });
+  const range = d0.getMonth() === d1.getMonth()
+    ? `${d0.getDate()} to ${d1.getDate()} ${monthLong(d1)}`
+    : `${d0.getDate()} ${monthLong(d0)} to ${d1.getDate()} ${monthLong(d1)}`;
+  const trackW = window.innerWidth - 2 * 4.6 * R - LABEL_REM * R;
+  const dayW = trackW / PLAN_DAYS;
+
+  const head = days.map((d, i) => {
+    const dt = dateOfKey(d);
+    return `<span class="g-day ${i === 0 ? 'is-today' : ''} ${dt.getDay() % 6 === 0 ? 'is-weekend' : ''}"><b>${esc(dt.toLocaleDateString('en-GB', { weekday: 'narrow' }))}</b><span>${dt.getDate()}</span></span>`;
+  }).join('');
+  const cols = days.map((d, i) => `<i class="${i === 0 ? 'is-today' : ''} ${dateOfKey(d).getDay() % 6 === 0 ? 'is-weekend' : ''}"></i>`).join('');
+  const row = (label, track, cls = '') => `<div class="g-row ${cls}"><div class="g-label">${label}</div><div class="g-track">${track}</div></div>`;
+  const group = (title) => `<p class="g-group">${esc(title)}</p>`;
+  const out = [];
+
+  // Study: planned hours per subject per day.
+  const subjects = P().study.filter((x) => days.some((d) => toNumber(x.cells[d]) > 0));
+  const maxH = Math.max(1, ...subjects.flatMap((x) => days.map((d) => toNumber(x.cells[d]))));
+  if (subjects.length) {
+    out.push(group('Study'));
+    for (const x of subjects.slice(0, 5)) {
+      const total = days.reduce((n, d) => n + toNumber(x.cells[d]), 0);
+      const cells = days.map((d, i) => {
+        const h = toNumber(x.cells[d]);
+        return h ? `<span class="g-cell" style="left:${pct(i)};width:${pct(1)}"><b style="--a:${(0.4 + 0.6 * (h / maxH)).toFixed(2)}">${fmtH(h)}</b></span>` : '';
+      }).join('');
+      out.push(row(`<i class="g-dot"></i><span class="g-name">${esc(x.subject)}</span><span class="g-total">${fmtH(total)} h</span>`, cells, '').replace('class="g-row ', `style="--c:${colorOf(x.subject)}" class="g-row `));
+    }
+  }
+
+  // Milestones: exams and dated events (study blocks are covered above),
+  // packed into lanes so no two labels touch.
+  const inRange = (a, b) => a <= last && (b || a) >= k;
+  const items = [
+    ...P().exams.filter((e) => e.start && inRange(e.start)).map((e) => ({ start: idx(e.start), len: 1, title: e.subject ? `${e.subject} exam` : e.title, kind: 'exam', color: colorOf(e.subject) })),
+    ...ofType('event').filter((e) => e.start && !/^study:/i.test(e.title) && e.area !== 'Study' && inRange(e.start, e.end)).map((e) => {
+      const s0 = idx(e.start);
+      const s1 = e.end ? Math.min(PLAN_DAYS - 1, idx(e.end)) : s0;
+      return { start: s0, len: s1 - s0 + 1, title: e.title, kind: s1 > s0 ? 'bar' : 'dot', color: eventColor(e) };
+    }),
+  ].sort((a, b) => a.start - b.start || b.len - a.len);
+  const TT = 1.4 * R;
+  const lanes = [];
+  let hidden = 0;
+  for (const it of items) {
+    const tw = textWidth(it.title, 400, TT);
+    it.x = it.kind === 'bar' ? it.start * dayW : (it.start + 0.5) * dayW - 0.55 * R;
+    it.want = it.kind === 'bar' ? Math.max(it.len * dayW, tw + 2.2 * R) : tw + 2.2 * R;
+    it.min = it.kind === 'bar' ? it.len * dayW : Math.min(it.want, 7 * R);
+    // A lane where the whole label fits, else a new lane, else the lane where
+    // a shortened label still fits.
+    let lane = lanes.findIndex((l) => l.end + 0.8 * R <= it.x);
+    if (lane < 0 && lanes.length < 3) lane = lanes.push({ end: -Infinity, minEnd: -Infinity, items: [] }) - 1;
+    if (lane < 0) lane = lanes.findIndex((l) => l.minEnd + 0.8 * R <= it.x);
+    if (lane < 0) { hidden++; continue; }
+    lanes[lane].items.push(it);
+    lanes[lane].end = it.x + it.want;
+    lanes[lane].minEnd = it.x + it.min;
+  }
+  if (lanes.length) {
+    out.push(group('Milestones'));
+    lanes.forEach((l, li) => {
+      const html = l.items.map((it, n) => {
+        const next = l.items[n + 1];
+        const room = Math.max(it.min, Math.min(it.want, (next ? next.x : trackW) - it.x - 0.8 * R));
+        if (it.kind === 'bar') {
+          return `<span class="g-bar" style="--c:${esc(it.color)};left:${(it.x / trackW * 100).toFixed(3)}%;width:${(it.len * dayW / trackW * 100).toFixed(3)}%"><em style="max-width:${Math.max(room, it.len * dayW).toFixed(0)}px">${esc(it.title)}</em></span>`;
+        }
+        return `<span class="g-mark ${it.kind === 'exam' ? 'is-exam' : ''}" style="--c:${esc(it.color)};left:${(it.x / trackW * 100).toFixed(3)}%;max-width:${room.toFixed(0)}px"><i></i><em>${esc(it.title)}</em></span>`;
+      }).join('');
+      out.push(row(li === lanes.length - 1 && hidden ? `<span class="g-more">and ${hidden} more</span>` : '', html));
+    });
+  }
+
+  // Tasks: open tasks per area per day, with overdue ones counted on today.
+  const tasks = [...ofType('task'), ...ofType('reading')].filter(isOpen);
+  const overdue = tasks.filter((t) => taskDue(t) && taskDue(t) < k);
+  const byArea = new Map();
+  for (const t of tasks) {
+    const ds = (plannedDays(t).length ? plannedDays(t) : [t.start]).filter((d) => d && d >= k && d <= last);
+    if (!ds.length) continue;
+    const area = t.area || 'Other';
+    if (!byArea.has(area)) byArea.set(area, { n: 0, days: {} });
+    const a = byArea.get(area);
+    a.n++;
+    for (const d of ds) (a.days[d] ||= []).push(t);
+  }
+  const areas = [...byArea.entries()].sort((a, b) => b[1].n - a[1].n);
+  if (areas.length || overdue.length) {
+    out.push(group('Tasks'));
+    if (overdue.length) out.push(row('<span class="g-name is-late">Overdue</span>', `<span class="g-cell" style="left:0;width:${pct(1)}"><b class="g-count is-late">${overdue.length}</b></span>`));
+    for (const [area, a] of areas.slice(0, overdue.length ? 2 : 3)) {
+      const cells = days.map((d, i) => {
+        const list = a.days[d];
+        if (!list) return '';
+        const p1 = list.some((t) => t.priority === 'P1');
+        return `<span class="g-cell" style="left:${pct(i)};width:${pct(1)}"><b class="g-count ${p1 ? 'is-p1' : ''}">${list.length}</b></span>`;
+      }).join('');
+      out.push(row(`<span class="g-name">${esc(area)}</span><span class="g-total">${a.n}</span>`, cells));
+    }
+  }
+
+  // Exercise sessions.
+  const ex = ofType('exercise');
+  const exCells = days.map((d, i) => {
+    const v = ex.map((e) => String(e.cells[d] || '').toUpperCase()).find(Boolean);
+    return v ? `<span class="g-cell" style="left:${pct(i)};width:${pct(1)}"><b class="g-chip">${esc(EX_NAMES[v] || v)}</b></span>` : '';
+  }).join('');
+  if (/g-cell/.test(exCells)) {
+    out.push(group('Exercise'));
+    out.push(row('<span class="g-name">Sessions</span>', exCells));
+  }
+
+  const d = new Date();
+  const w = weatherLine();
+  return `
+    <header class="plan-head">
+      <div>
+        <h1 class="plan-title">The next two weeks</h1>
+        <p class="plan-range">${esc(range)}</p>
+      </div>
+      <div class="plan-now">
+        <p class="plan-clock">${pad(d.getHours())}<span class="colon">:</span>${pad(d.getMinutes())}</p>
+        ${w ? `<p class="plan-wx">${esc(w)}</p>` : ''}
+      </div>
+    </header>
+    <div class="gantt" style="--lw:${LABEL_REM}rem">
+      <div class="g-row g-head"><div class="g-label"></div><div class="g-track g-days">${head}</div></div>
+      <div class="g-body">
+        <div class="g-cols">${cols}</div>
+        ${out.join('')}
+      </div>
+    </div>`;
+}
+
 // The day as a trajectory: an arch from morning to midnight. The part already
 // flown is drawn solid, the rest dashed; events sit on the arch with their
 // time and title, and a glowing marker shows where the day is now.
@@ -492,7 +676,7 @@ function renderDay() {
   const to = 24 * 60;
   const padX = 1.2 * R;
   const base = H - 2.6 * R; // where the arch meets the hour line
-  const amp = base - 7.4 * R; // leaves room above the top for two rows of labels
+  const amp = base - 6.2 * R; // leaves room above the top for two rows of labels
   const xOf = (m) => padX + ((Math.min(Math.max(m, from), to) - from) / (to - from)) * (W - 2 * padX);
   const yOf = (m) => base - amp * Math.sin(Math.PI * ((Math.min(Math.max(m, from), to) - from) / (to - from)));
   const path = (a, b) => {
@@ -510,29 +694,72 @@ function renderDay() {
     ticks.push(`<line class="tick" x1="${xOf(h * 60).toFixed(1)}" x2="${xOf(h * 60).toFixed(1)}" y1="${(base + 0.25 * R).toFixed(1)}" y2="${(base + 0.6 * R).toFixed(1)}"/>`);
   }
 
-  // Each label takes the first of three lanes where it does not touch the
-  // label before it: just above the arch, inside it, or higher above.
-  const charW = 0.55 * 1.5 * R;
-  const LANES = [['above', -2.6], ['below', 2.1], ['high', -5.6]];
-  const laneEnd = LANES.map(() => -Infinity);
-  const marks = timed.map((a) => {
-    const x = xOf(a.start);
-    const y = yOf(a.start);
-    const title = clip(a.title, 26);
-    const w = Math.max(5, title.length) * charW;
-    const li = LANES.findIndex((_, i) => x - w / 2 > laneEnd[i] + R);
-    const side = li < 0 ? 'none' : LANES[li][0];
-    if (li >= 0) laneEnd[li] = x + w / 2;
+  // Labels sit in two tidy rows above the arch, each starting at its event's
+  // dot and joined to it by a thin line. An event takes the row nearer the
+  // arch when there is room, else the upper one; a title is shortened to the
+  // space before the next label in its row.
+  const family = getComputedStyle(document.documentElement).getPropertyValue('--sans') || 'sans-serif';
+  const mctx = (renderDay.canvas ||= document.createElement('canvas')).getContext('2d');
+  const measure = (text, weight, size) => { mctx.font = `${weight} ${size}px ${family}`; return mctx.measureText(text).width; };
+  const TS = 1.35 * R;
+  const TT = 1.5 * R;
+  const GAP = 0.55 * R;
+  const SEP = 1.8 * R;
+  const ROW_Y = [1.6 * R, 4.1 * R];
+  const right = W - padX;
+  let allDayHtml = '';
+  let row0Right = right;
+  if (allDay.length) {
+    let text = `All day: ${allDay.map((a) => a.title).join(', ')}`;
+    const maxW = W * 0.34;
+    while (text.length > 12 && measure(text, 300, 1.4 * R) > maxW) text = text.slice(0, -2).trimEnd() + '\u2026';
+    text = text.replace(/\u2026+$/, '\u2026');
+    row0Right = right - measure(text, 300, 1.4 * R) - SEP;
+    allDayHtml = `<text class="all-day" x="${right.toFixed(1)}" y="${ROW_Y[0].toFixed(1)}" text-anchor="end">${esc(text)}</text>`;
+  }
+  const rowRight = [row0Right, right];
+  const labels = timed.map((a) => {
+    const time = hhmm(a.start);
+    const title = a.title.replace(/^study:\s*/i, '');
+    const tw = measure(time, 500, TS);
+    return { a, x: xOf(a.start), y: yOf(a.start), time, title, tw, minW: tw + GAP + measure('Abcdefg\u2026', 400, TT) };
+  });
+  const rowEnd = [-Infinity, -Infinity];
+  for (const l of labels) {
+    const fits = (r) => {
+      const lx = Math.max(Math.min(l.x, rowRight[r] - l.minW), rowEnd[r] + SEP);
+      return lx + l.minW <= rowRight[r] + 0.5 && lx <= l.x + 0.5 ? lx : null;
+    };
+    let r = [1, 0].find((row) => fits(row) != null);
+    if (r == null) r = rowEnd[1] <= rowEnd[0] ? 1 : 0;
+    l.row = r;
+    l.lx = fits(r) ?? Math.max(padX, Math.min(l.x, rowRight[r] - l.tw));
+    rowEnd[r] = l.lx + l.minW;
+  }
+  for (const r of [0, 1]) {
+    const inRow = labels.filter((l) => l.row === r).sort((p, q) => p.lx - q.lx);
+    inRow.forEach((l, n) => {
+      const limit = n + 1 < inRow.length ? inRow[n + 1].lx - SEP : rowRight[r];
+      const room = limit - l.lx - l.tw - GAP;
+      let t = l.title;
+      if (measure(t, 400, TT) > room) {
+        while (t.length > 1 && measure(t + '\u2026', 400, TT) > room) t = t.slice(0, -1);
+        t = t.trimEnd().replace(/[,;:]$/, '') + '\u2026';
+      }
+      l.show = limit - l.lx >= l.tw;
+      l.text = room >= measure('Abc\u2026', 400, TT) ? t : '';
+    });
+  }
+  const marks = labels.map((l) => {
+    const { a, x, y } = l;
     const past = (a.end ?? a.start + 30) <= nowMin();
-    const ty = li < 0 ? 0 : y + LANES[li][1] * R;
-    const anchor = x < W * 0.08 ? 'start' : x > W * 0.92 ? 'end' : 'middle';
+    const ly = ROW_Y[l.row];
     return `
       <g class="mark ${past ? 'is-past' : ''}" style="--c:${esc(a.color)}">
         ${a.end ? `<path class="span" d="${path(a.start, Math.min(a.end, to))}"/>` : ''}
+        ${l.show ? `<line class="leader" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${(ly + 0.6 * R).toFixed(1)}" y2="${(y - 0.7 * R).toFixed(1)}"/>` : ''}
         <circle class="dot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(0.42 * R).toFixed(1)}"/>
-        ${side === 'none' ? '' : `
-          <text class="mark-time" x="${x.toFixed(1)}" y="${ty.toFixed(1)}" text-anchor="${anchor}">${hhmm(a.start)}</text>
-          <text class="mark-title" x="${x.toFixed(1)}" y="${(ty + 1.55 * R).toFixed(1)}" text-anchor="${anchor}">${esc(title)}</text>`}
+        ${l.show ? `<text x="${l.lx.toFixed(1)}" y="${ly.toFixed(1)}"><tspan class="mark-time">${l.time}</tspan>${l.text ? `<tspan class="mark-title" dx="${GAP.toFixed(1)}">${esc(l.text)}</tspan>` : ''}</text>` : ''}
       </g>`;
   }).join('');
 
@@ -555,12 +782,12 @@ function renderDay() {
       <path class="ahead" d="${path(now, to)}"/>
       ${now > from ? `<path class="flown" d="${path(from, now)}"/>` : ''}
       ${marks}
+      ${allDayHtml}
       <circle class="now-glow" cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="${(2.4 * R).toFixed(1)}" fill="url(#glow)" style="transform-origin:${nx.toFixed(1)}px ${ny.toFixed(1)}px"/>
       <circle class="ripple" cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="${(0.55 * R).toFixed(1)}" style="transform-origin:${nx.toFixed(1)}px ${ny.toFixed(1)}px"/>
       <circle class="ripple is-late" cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="${(0.55 * R).toFixed(1)}" style="transform-origin:${nx.toFixed(1)}px ${ny.toFixed(1)}px"/>
       <circle class="now" cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="${(0.55 * R).toFixed(1)}"/>
     </svg>
-    ${allDay.length ? `<p class="all-day">All day: ${allDay.slice(0, 2).map((a) => esc(clip(a.title, 48))).join(', ')}${allDay.length > 2 ? `, and ${allDay.length - 2} more` : ''}</p>` : ''}
     ${!timed.length ? '<p class="day-empty">No events on the calendar today</p>' : ''}`;
 }
 
@@ -570,7 +797,7 @@ function renderDay() {
 // not keep the same pixels lit.
 const SHIFTS = [[0, 0], [3, 2], [6, 0], [3, -2], [0, -3], [-3, -2], [-6, 0], [-3, 2]];
 function shiftForBurnIn() {
-  const b = $('#board');
+  const b = $('#pages');
   if (!b) return;
   const [x, y] = SHIFTS[Math.floor(Date.now() / 60000) % SHIFTS.length];
   b.style.transform = `translate(${x}px, ${y}px)`;
@@ -601,19 +828,45 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove('is-on'), 2200);
 }
 
-function setNight(mode) {
-  state.night = mode;
-  store.set('pg.tvNight', mode);
+const NIGHT_WINDOW = `${hhmm(NIGHT_FROM)} to ${hhmm(NIGHT_TO)}`;
+
+// Up: the opposite of now, until the next automatic switch. Down: automatic.
+function toggleNight() {
+  const on = !isNight();
+  const until = nextSwitch();
+  state.night = { on, until };
+  store.set('pg.tvNightOverride', JSON.stringify(state.night));
   render();
-  toast(mode === 'auto' ? 'Night mode: automatic, 23:00 to 07:00' : mode === 'on' ? 'Night mode: on' : 'Night mode: off');
+  toast(`Night mode ${on ? 'on' : 'off'} until ${hhmm(new Date(until).getHours() * 60 + new Date(until).getMinutes())}`);
+}
+
+function autoNightMode() {
+  state.night = null;
+  store.set('pg.tvNightOverride', '');
+  render();
+  toast(`Night mode: automatic, ${NIGHT_WINDOW}`);
+}
+
+// Pages slide sideways; the plan page goes back to the day after 5 idle minutes.
+let pageTimer = 0;
+function showPage(n, animate = true) {
+  state.page = Math.max(0, Math.min(1, n));
+  const pages = $('#pages');
+  if (!pages) return;
+  pages.classList.toggle('no-anim', !animate);
+  pages.dataset.page = String(state.page);
+  $$('#page-dots i').forEach((d, i) => d.classList.toggle('is-on', i === state.page));
+  clearTimeout(pageTimer);
+  if (state.page) pageTimer = setTimeout(() => showPage(0), 5 * 60 * 1000);
 }
 
 document.addEventListener('keydown', (ev) => {
   if (!state.plan || !$('#board')) return;
-  const modes = ['auto', 'on', 'off'];
   switch (ev.key) {
-    case 'ArrowUp': ev.preventDefault(); return setNight(modes[(modes.indexOf(state.night) + 1) % 3]);
-    case 'ArrowDown': ev.preventDefault(); return setNight(modes[(modes.indexOf(state.night) + 2) % 3]);
+    case 'ArrowLeft': ev.preventDefault(); return showPage(state.page - 1);
+    case 'ArrowRight': ev.preventDefault(); return showPage(state.page + 1);
+    case 'ArrowUp': ev.preventDefault(); return toggleNight();
+    case 'ArrowDown': ev.preventDefault(); return autoNightMode();
     case 'Enter':
     case ' ':
       ev.preventDefault();
@@ -664,8 +917,11 @@ const urlPlace = new URLSearchParams(location.search).get('place') || '';
 async function boot() {
   initSky($('#sky'), () => render());
   if (urlPlace) setPlace(urlPlace);
+  try { localStorage.removeItem('pg.tvNight'); } catch {}
+  try { const o = JSON.parse(store.get('pg.tvNightOverride') || 'null'); if (o && o.until > Date.now()) state.night = o; } catch {}
   const night = new URLSearchParams(location.search).get('night');
-  if (['auto', 'on', 'off'].includes(night)) { state.night = night; store.set('pg.tvNight', night); }
+  if (night === 'on' || night === 'off') state.night = { on: night === 'on', until: Infinity };
+  if (night === 'auto') state.night = null;
   document.documentElement.classList.toggle('is-night', isNight());
   const paired = pairFromHash();
   checkForUpdate();
