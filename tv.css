@@ -212,6 +212,7 @@ b, em { font-weight: inherit; font-style: inherit; }
 .gate-input:focus { outline: none; border-color: var(--ember); box-shadow: 0 0 0 0.4rem rgb(255 178 94 / 0.25); }
 .gate-form .gate-btn { flex: none; align-self: auto; }
 .gate-retry { margin-bottom: 2.4rem; }
+.gate p.gate-detail { margin-top: -1.4rem; font-size: 1.6rem; color: var(--haze); }
 .gate-alt {
   align-self: flex-start; padding: 0.6rem 0; border: 0; background: none;
   color: var(--haze); font: 400 1.7rem var(--sans); cursor: pointer;

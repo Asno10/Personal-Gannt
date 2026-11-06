@@ -19,11 +19,11 @@
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=42';
-import * as cal from './calendar.js?v=42';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=42';
+import * as api from './sheets.js?v=43';
+import * as cal from './calendar.js?v=43';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=43';
 
-const BUILD = '42';
+const BUILD = '43';
 const REFRESH_MS = 2 * 60 * 1000;
 const CAL_MS = 5 * 60 * 1000;
 const EXAM_MIN = 120; // an exam counts as over two hours after it starts
@@ -92,14 +92,39 @@ function pairFromHash() {
 async function connect() {
   loading('Connecting');
   if (await api.ensureToken()) return start();
-  if (api.canStaySignedIn()) return gate('Could not reach Google to connect. Check that the TV is online, then try again.', { retry: true });
+  if (api.canStaySignedIn()) {
+    const detail = await diagnose();
+    if (detail === 'ok' && (await api.ensureToken())) return start();
+    return gate('The TV could not get access from your sheet\'s Apps Script.', { retry: true, detail: detail === 'ok' ? '' : detail });
+  }
   gate('That TV link no longer works, probably because app access was reset in the sheet. Copy a new one in the app and paste it here.');
+}
+
+// Repeats the access request to say why it failed, in words that point at
+// the cause. Returns 'ok' if it worked this time.
+async function diagnose() {
+  const link = api.stayLink();
+  if (!link) return '';
+  try {
+    const res = await fetch(`${link.url}?key=${encodeURIComponent(link.key)}&t=${Date.now()}`, { cache: 'no-store', redirect: 'follow' });
+    const text = await res.text();
+    if (/^\s*</.test(text)) return `Details: the web app answered with a web page (HTTP ${res.status}) instead of a token. It is probably not set to Who has access: Anyone.`;
+    if (!res.ok) return `Details: the web app answered HTTP ${res.status}.`;
+    try {
+      const body = JSON.parse(text);
+      if (body.token) return 'ok';
+      if (body.error) return `Details: the web app answered "${body.error}".`;
+    } catch {}
+    return `Details: unexpected answer from the web app: ${text.slice(0, 80)}`;
+  } catch (e) {
+    return `Details: the request was blocked before any answer arrived (${e?.message || e?.name || 'no reason given'}). This happens when the web app asks for a Google sign-in first, or when the network or browser blocks script.google.com.`;
+  }
 }
 
 // The connect screen. The TV link is pasted into the field (with the Google
 // TV app's keyboard on a phone); Google's own sign-in is offered second,
 // since TV and kiosk browsers block the pop-up window it needs.
-function gate(message = '', { retry = false } = {}) {
+function gate(message = '', { retry = false, detail = '' } = {}) {
   root.innerHTML = `
     ${sky()}
     <main class="gate">
@@ -110,6 +135,7 @@ function gate(message = '', { retry = false } = {}) {
         <button class="gate-btn" type="submit">Connect</button>
       </form>
       ${message ? `<p class="gate-error" role="alert">${esc(message)}</p>` : ''}
+      ${detail ? `<p class="gate-detail">${esc(detail)}</p>` : ''}
       ${retry ? '<button class="gate-btn gate-retry" id="retry" type="button">Try again</button>' : ''}
       <button class="gate-alt" id="sign-in" type="button">Sign in with Google instead</button>
     </main>`;
