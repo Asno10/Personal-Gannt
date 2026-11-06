@@ -200,7 +200,24 @@ b, em { font-weight: inherit; font-style: inherit; }
 .gate h1 { font: 700 6rem/1 var(--sans); letter-spacing: -0.03em; margin-bottom: 2.4rem; }
 .gate p { max-width: 56rem; margin-bottom: 2.6rem; font: 300 2.1rem/1.5 var(--sans); color: var(--haze); }
 .gate p b { color: var(--starlight); font-weight: 400; }
-.gate-error { color: var(--flare) !important; }
+.gate-error { margin-top: -0.6rem; color: var(--flare) !important; }
+.gate-form { display: flex; gap: 1.4rem; width: 100%; max-width: 72rem; margin-bottom: 2.6rem; }
+.gate-input {
+  flex: 1; min-width: 0;
+  padding: 1.2rem 2rem; border: 0.15rem solid var(--dusk); border-radius: 99px;
+  background: rgb(255 255 255 / 0.05); color: var(--starlight);
+  font: 400 1.9rem/1.2 var(--sans);
+}
+.gate-input::placeholder { color: var(--haze-2); }
+.gate-input:focus { outline: none; border-color: var(--ember); box-shadow: 0 0 0 0.4rem rgb(255 178 94 / 0.25); }
+.gate-form .gate-btn { flex: none; align-self: auto; }
+.gate-retry { margin-bottom: 2.4rem; }
+.gate-alt {
+  align-self: flex-start; padding: 0.6rem 0; border: 0; background: none;
+  color: var(--haze); font: 400 1.7rem var(--sans); cursor: pointer;
+  text-decoration: underline; text-underline-offset: 0.3rem; text-decoration-color: var(--haze-2);
+}
+.gate-alt:focus-visible, .gate-alt:hover { outline: none; color: var(--starlight); text-decoration-color: var(--ember); }
 .gate-loading { font: 500 3rem var(--sans) !important; color: var(--haze); animation: breathe 1.8s ease-in-out infinite alternate; }
 @keyframes breathe { from { opacity: 0.4; } to { opacity: 1; } }
 .gate-btn {

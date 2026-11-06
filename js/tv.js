@@ -19,11 +19,11 @@
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=41';
-import * as cal from './calendar.js?v=41';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=41';
+import * as api from './sheets.js?v=42';
+import * as cal from './calendar.js?v=42';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=42';
 
-const BUILD = '41';
+const BUILD = '42';
 const REFRESH_MS = 2 * 60 * 1000;
 const CAL_MS = 5 * 60 * 1000;
 const EXAM_MIN = 120; // an exam counts as over two hours after it starts
@@ -66,36 +66,75 @@ const state = {
 // ---------- Sign-in ----------
 
 // tv.html#pair=<base64url of {"u": web app address, "k": key}>
-function pairFromHash() {
-  const m = /[#&]pair=([\w-]+)/.exec(location.hash);
-  if (!m) return;
+// Reads the pairing part of a TV link (the whole link, or just its #pair=...
+// part) and saves the address and key. Returns 'none' when there is no
+// pairing part, 'ok' when it was saved, or 'bad' when it could not be read.
+function pairFrom(text) {
+  const m = /[#&]?pair=([\w-]+)/.exec(String(text || ''));
+  if (!m) return 'none';
   try {
     const json = atob(m[1].replace(/-/g, '+').replace(/_/g, '/'));
     const { u, k } = JSON.parse(json);
     api.rememberStaySignedIn(u, k);
-  } catch {}
-  history.replaceState(null, '', location.pathname + location.search);
+    return api.canStaySignedIn() ? 'ok' : 'bad';
+  } catch {
+    return 'bad';
+  }
 }
 
-function gate(message = '') {
+function pairFromHash() {
+  const result = pairFrom(location.hash);
+  if (result !== 'none') history.replaceState(null, '', location.pathname + location.search);
+  return result;
+}
+
+// Connects with the saved address and key. On failure, says why.
+async function connect() {
+  loading('Connecting');
+  if (await api.ensureToken()) return start();
+  if (api.canStaySignedIn()) return gate('Could not reach Google to connect. Check that the TV is online, then try again.', { retry: true });
+  gate('That TV link no longer works, probably because app access was reset in the sheet. Copy a new one in the app and paste it here.');
+}
+
+// The connect screen. The TV link is pasted into the field (with the Google
+// TV app's keyboard on a phone); Google's own sign-in is offered second,
+// since TV and kiosk browsers block the pop-up window it needs.
+function gate(message = '', { retry = false } = {}) {
   root.innerHTML = `
     ${sky()}
     <main class="gate">
-      <h1>Personal Gantt</h1>
-      <p>To show your plan here, open <b>Account</b> in the app on your phone, choose <b>Show the plan on a TV</b>, copy the TV link and open it in this browser. You can also sign in with Google on this screen.</p>
+      <h1>Connect this screen</h1>
+      <p>In the app on your phone, open <b>Account</b>, choose <b>Show the plan on a TV</b> and tap <b>Copy TV link</b>. Then paste the link here.</p>
+      <form class="gate-form" id="pair-form" autocomplete="off">
+        <input class="gate-input" id="pair-link" type="text" inputmode="url" spellcheck="false" placeholder="Paste the TV link" aria-label="TV link">
+        <button class="gate-btn" type="submit">Connect</button>
+      </form>
       ${message ? `<p class="gate-error" role="alert">${esc(message)}</p>` : ''}
-      <button class="gate-btn" id="sign-in" autofocus>Sign in with Google</button>
+      ${retry ? '<button class="gate-btn gate-retry" id="retry" type="button">Try again</button>' : ''}
+      <button class="gate-alt" id="sign-in" type="button">Sign in with Google instead</button>
     </main>`;
-  const b = $('#sign-in');
-  b.addEventListener('click', async () => {
+  const input = $('#pair-link');
+  $('#pair-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const result = pairFrom(input.value);
+    if (result === 'ok') return connect();
+    gate(result === 'none'
+      ? 'That is not a TV link. Copy it with Copy TV link in the app; it contains "#pair=".'
+      : 'That TV link is incomplete. Copy it again in the app and paste the whole link.');
+  });
+  $('#sign-in').addEventListener('click', async () => {
     try {
       await api.signIn({ silent: false });
       start();
     } catch (e) {
-      gate(e.message);
+      const msg = String(e?.message || '');
+      gate(/popup|pop-up|closed|did not load/i.test(msg) || !msg
+        ? 'Google sign-in needs a pop-up window, which this browser blocks. Paste the TV link above instead.'
+        : msg);
     }
   });
-  setTimeout(() => b.focus(), 50);
+  $('#retry')?.addEventListener('click', connect);
+  setTimeout(() => ($('#retry') || input).focus(), 50);
 }
 
 function loading(text) {
@@ -600,13 +639,11 @@ async function boot() {
   const night = new URLSearchParams(location.search).get('night');
   if (['auto', 'on', 'off'].includes(night)) { state.night = night; store.set('pg.tvNight', night); }
   document.documentElement.classList.toggle('is-night', isNight());
-  pairFromHash();
+  const paired = pairFromHash();
   checkForUpdate();
   if (!api.configured()) return gate('This copy of the app has no Google client ID yet.');
-  if (api.hasToken() || api.canStaySignedIn()) {
-    loading('Connecting');
-    if (await api.ensureToken()) return start();
-  }
+  if (paired === 'bad') return gate('That TV link is incomplete. Copy it again in the app and paste the whole link.');
+  if (api.hasToken() || api.canStaySignedIn()) return connect();
   gate();
 }
 
