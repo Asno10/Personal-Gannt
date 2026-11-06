@@ -1,5 +1,6 @@
-/* TV view. A night sky over a day drawn as a trajectory: deep indigo, faint
-   stars, starlight text and one warm ember for "now". The type is Apple's
+/* TV view. The sky outside as the background (its colour follows the sun,
+   with the weather on top; see js/sky.js), white text over it, and one warm
+   ember for "now". The type is Apple's
    system font (SF Pro) where there is one, and Inter, its close match,
    everywhere else, such as on a Google TV.
    Every size is in rem, and 1rem is a hundredth of the screen width (or of
@@ -9,9 +10,9 @@
   --night: #0b1222;
   --night-2: #060a14;
   --starlight: #eef1f8;
-  --haze: #8d98b3;
-  --haze-2: #5a6582;
-  --dusk: #2c3854;
+  --haze: rgb(255 255 255 / 0.7);
+  --haze-2: rgb(255 255 255 / 0.48);
+  --dusk: rgb(255 255 255 / 0.22);
   --ember: #ffb25e;
   --flare: #ff7b6b;
   --s0: #6fa8ff; --s1: #5fd8e6; --s2: #9c8cff; --s3: #ff7fa0;
@@ -39,10 +40,7 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; overflow: hidden; }
 body {
-  background:
-    radial-gradient(70rem 40rem at 8% -10%, rgb(52 72 140 / 0.32), transparent 70%),
-    radial-gradient(90rem 30rem at 50% 115%, rgb(255 178 94 / 0.09), transparent 70%),
-    linear-gradient(180deg, var(--night) 0%, var(--night-2) 100%);
+  background: var(--night-2);
   color: var(--starlight);
   font: 300 1.8rem/1.3 var(--sans);
   -webkit-font-smoothing: antialiased;
@@ -54,8 +52,73 @@ b, em { font-weight: inherit; font-style: inherit; }
 [hidden] { display: none !important; }
 .hide-pointer, .hide-pointer * { cursor: none !important; }
 
-.sky { position: fixed; inset: 0; pointer-events: none; transition: opacity 2s; }
-.sky svg { width: 100%; height: 100%; fill: #dfe6ff; }
+/* ---------- The sky ---------- */
+
+.sky { position: fixed; inset: 0; overflow: hidden; pointer-events: none; transition: opacity 2s; }
+.sky > * { position: absolute; inset: 0; }
+.sky-grad, .sky-glow, .sky-overcast, .sky-fog, .sky-scrim { transition: background 60s linear, opacity 20s linear; }
+.sky-glow { animation: breathe-glow 9s ease-in-out infinite alternate; }
+@keyframes breathe-glow { from { transform: scale(1); opacity: 0.85; } to { transform: scale(1.08); opacity: 1; } }
+.sky-stars { width: 100%; height: 100%; fill: #e6ecff; transition: opacity 30s linear; }
+.sky-stars .tw { animation: twinkle ease-in-out infinite alternate; }
+@keyframes twinkle { from { opacity: 0.08; } to { opacity: 0.9; } }
+
+.sky-moon { inset: auto; width: 12rem; height: 12rem; transform: translate(-50%, -50%); transition: opacity 30s linear, left 60s linear, top 60s linear; filter: drop-shadow(0 0 1.6rem rgb(220 230 255 / 0.55)); }
+.moon-dark { fill: rgb(200 210 235 / 0.08); }
+.moon-lit { fill: #f3f1e8; }
+
+.sky-rays {
+  inset: auto; width: 160rem; height: 160rem; transform: translate(-50%, -50%);
+  background: repeating-conic-gradient(from 0deg, transparent 0deg 9deg, color-mix(in srgb, var(--ray) 14%, transparent) 12deg, transparent 15deg 26deg);
+  -webkit-mask: radial-gradient(closest-side, #000 8%, transparent 70%);
+  mask: radial-gradient(closest-side, #000 8%, transparent 70%);
+  animation: spin 240s linear infinite;
+  transition: opacity 20s linear;
+}
+@keyframes spin { to { transform: translate(-50%, -50%) rotate(360deg); } }
+
+.sky-overcast { background: linear-gradient(180deg, var(--oc, #888) 0%, transparent 85%); opacity: 0; }
+.sky-clouds { --cloud: rgb(255 255 255 / 0.7); --wind: 1; }
+.cloud {
+  position: absolute; left: 0; width: 32rem; height: 10rem;
+  opacity: 0; transition: opacity 20s linear;
+  animation: drift var(--dur) linear infinite;
+  animation-duration: calc(var(--dur) / var(--wind));
+}
+.cloud.is-on { opacity: 1; }
+.cloud i { position: absolute; border-radius: 50%; background: radial-gradient(closest-side, var(--cloud), transparent); }
+@keyframes drift { from { transform: translateX(-40rem) scale(var(--scale)); } to { transform: translateX(calc(100vw + 10rem)) scale(var(--scale)); } }
+
+.sky-precip { width: 100%; height: 100%; }
+.sky-fog { background: linear-gradient(0deg, rgb(210 216 226 / 0.55) 0%, rgb(210 216 226 / 0.25) 50%, transparent 100%); opacity: 0; animation: fog-drift 40s ease-in-out infinite alternate; }
+@keyframes fog-drift { from { transform: translateX(-3%); } to { transform: translateX(3%); } }
+.sky-flash { background: rgb(230 236 255 / 0.22); opacity: 0; }
+.sky-flash.is-on { animation: flash 0.9s ease-out; }
+@keyframes flash { 0% { opacity: 0; } 8% { opacity: 1; } 20% { opacity: 0.2; } 28% { opacity: 0.8; } 100% { opacity: 0; } }
+.sky-scrim { background: linear-gradient(180deg, rgb(4 12 32 / 0.9) 0%, rgb(4 12 32 / 0.55) 60%, rgb(4 12 32 / 0.8) 100%); opacity: 0; }
+
+.sky-meteor {
+  inset: auto; width: 22rem; height: 0.18rem; opacity: 0;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.9));
+  border-radius: 1rem; transform-origin: right center;
+  transform: rotate(var(--angle, 25deg)) translateX(0);
+}
+.sky-meteor.is-on { animation: meteor 1.4s ease-out; }
+@keyframes meteor {
+  0% { opacity: 0; transform: rotate(var(--angle)) translateX(-10rem) scaleX(0.2); }
+  15% { opacity: 1; }
+  100% { opacity: 0; transform: rotate(var(--angle)) translateX(30rem) scaleX(1); }
+}
+
+.flock { position: absolute; left: 0; width: 20rem; animation: fly 44s linear forwards; }
+.flock.is-rtl { animation-name: fly-rtl; }
+.flock.is-rtl .bird { transform: scaleX(-1); }
+.bird { position: absolute; width: 1.7rem; height: 0.8rem; fill: none; stroke: rgb(20 28 44 / 0.55); stroke-width: 1.6; stroke-linecap: round; animation: flap 0.9s ease-in-out infinite alternate; }
+@keyframes flap { from { transform: scaleY(1); } to { transform: scaleY(-0.4); } }
+.flock.is-rtl .bird { animation-name: flap-rtl; }
+@keyframes flap-rtl { from { transform: scale(-1, 1); } to { transform: scale(-1, -0.4); } }
+@keyframes fly { from { transform: translate(-22rem, 0); } 50% { transform: translate(50vw, -3rem); } to { transform: translate(calc(100vw + 4rem), 1rem); } }
+@keyframes fly-rtl { from { transform: translate(calc(100vw + 4rem), 0); } 50% { transform: translate(50vw, -3rem); } to { transform: translate(-22rem, 1rem); } }
 
 /* ---------- Layout ---------- */
 
@@ -73,7 +136,9 @@ b, em { font-weight: inherit; font-style: inherit; }
   row-gap: 2rem;
   padding: 2.8rem 4.6rem 1.8rem; /* room for TV overscan */
   transition: transform 2s ease;
+  text-shadow: 0 0.1rem 1.2rem rgb(0 10 30 / 0.35);
 }
+:root.is-night .board { text-shadow: none; }
 .hero { grid-area: hero; min-width: 0; display: flex; align-items: flex-end; gap: 6rem; }
 .col-exam { grid-area: exam; }
 .col-study { grid-area: study; }
@@ -92,10 +157,12 @@ b, em { font-weight: inherit; font-style: inherit; }
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.colon { display: inline-block; margin: 0 0.04em; transform: translateY(-0.06em); color: var(--ember); }
+.colon { display: inline-block; margin: 0 0.04em; transform: translateY(-0.06em); color: var(--ember); animation: beat 2s ease-in-out infinite; }
+@keyframes beat { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.wx { margin-left: 1.6rem; padding-left: 1.6rem; border-left: 1px solid var(--dusk); color: var(--starlight); font-weight: 400; }
 .hero-text { min-width: 0; padding-bottom: 1.2rem; }
 .summary { max-width: 58rem; font: 300 2.4rem/1.35 var(--sans); }
-.summary.is-next { margin-top: 0.6rem; color: var(--haze); }
+.summary.is-sub { margin-top: 0.4rem; color: var(--haze); }
 .status { margin-top: 1rem; font: 400 1.4rem var(--sans); color: var(--flare); }
 
 /* ---------- Next exam ---------- */
@@ -139,10 +206,18 @@ b, em { font-weight: inherit; font-style: inherit; }
 .sub-h { flex: none; font: 300 1.6rem var(--sans); color: var(--haze); font-variant-numeric: tabular-nums; }
 .sub-bar { position: relative; height: 0.45rem; margin-top: 0.7rem; border-radius: 1rem; background: color-mix(in srgb, var(--c) 16%, transparent); }
 .sub-bar span {
-  position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--c);
+  position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--c); overflow: hidden;
   box-shadow: 0 0 1rem color-mix(in srgb, var(--c) 55%, transparent);
   min-width: 0.45rem;
 }
+.sub-bar span::after {
+  content: ''; position: absolute; inset: 0; width: 40%;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.65), transparent);
+  animation: shimmer 7s ease-in-out infinite;
+}
+@keyframes shimmer { 0% { transform: translateX(-120%); } 30%, 100% { transform: translateX(320%); } }
+.wk-bar { animation: rise 1.6s cubic-bezier(0.32, 0.72, 0, 1) both; transform-origin: bottom; }
+@keyframes rise { from { clip-path: inset(100% 0 0 0); } to { clip-path: inset(0 0 0 0); } }
 
 /* Tasks */
 .tasks li { display: flex; align-items: flex-start; gap: 1.2rem; padding: 0.45rem 0; }
@@ -181,7 +256,13 @@ b, em { font-weight: inherit; font-style: inherit; }
 .arc .horizon { stroke: var(--dusk); stroke-width: 1; }
 .arc .tick { stroke: var(--dusk); stroke-width: 1; }
 .arc .tick-label { font: 300 1.25rem var(--sans); fill: var(--haze-2); }
-.arc .ahead { fill: none; stroke: var(--dusk); stroke-width: 0.2rem; stroke-dasharray: 0.2rem 0.7rem; stroke-linecap: round; }
+.arc .ahead { fill: none; stroke: rgb(255 255 255 / 0.4); stroke-width: 0.2rem; stroke-dasharray: 0.2rem 0.7rem; stroke-linecap: round; animation: flow 3s linear infinite; }
+@keyframes flow { to { stroke-dashoffset: -1.8rem; } }
+.arc .ripple { fill: none; stroke: var(--ember); stroke-width: 0.15rem; animation: ripple 3.2s ease-out infinite; }
+.arc .ripple.is-late { animation-delay: 1.6s; }
+@keyframes ripple { from { transform: scale(1); opacity: 0.9; } to { transform: scale(5); opacity: 0; } }
+.arc .now-glow { animation: breathe-now 3.2s ease-in-out infinite; }
+@keyframes breathe-now { 0%, 100% { transform: scale(0.85); opacity: 0.7; } 50% { transform: scale(1.15); opacity: 1; } }
 .arc .flown { fill: none; stroke: url(#flown); stroke-width: 0.3rem; stroke-linecap: round; }
 .arc .span { fill: none; stroke: var(--c); stroke-width: 0.7rem; stroke-linecap: round; opacity: 0.35; }
 .arc .dot { fill: var(--c); stroke: var(--night-2); stroke-width: 0.25rem; }
@@ -244,5 +325,6 @@ b, em { font-weight: inherit; font-style: inherit; }
 
 @media (prefers-reduced-motion: reduce) {
   .board, .sky, .gate-btn { transition: none !important; }
+  .sky *, .colon, .arc *, .sub-bar span::after, .wk-bar { animation: none !important; }
   .gate-loading { animation: none; }
 }

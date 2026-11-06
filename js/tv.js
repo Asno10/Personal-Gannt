@@ -19,11 +19,12 @@
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=43';
-import * as cal from './calendar.js?v=43';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=43';
+import * as api from './sheets.js?v=44';
+import * as cal from './calendar.js?v=44';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=44';
+import { initSky, setPlace, weatherLine, placeName } from './sky.js?v=44';
 
-const BUILD = '43';
+const BUILD = '44';
 const REFRESH_MS = 2 * 60 * 1000;
 const CAL_MS = 5 * 60 * 1000;
 const EXAM_MIN = 120; // an exam counts as over two hours after it starts
@@ -126,7 +127,6 @@ async function diagnose() {
 // since TV and kiosk browsers block the pop-up window it needs.
 function gate(message = '', { retry = false, detail = '' } = {}) {
   root.innerHTML = `
-    ${sky()}
     <main class="gate">
       <h1>Connect this screen</h1>
       <p>In the app on your phone, open <b>Account</b>, choose <b>Show the plan on a TV</b> and tap <b>Copy TV link</b>. Then paste the link here.</p>
@@ -164,7 +164,7 @@ function gate(message = '', { retry = false, detail = '' } = {}) {
 }
 
 function loading(text) {
-  root.innerHTML = `${sky()}<main class="gate"><p class="gate-loading">${esc(text)}</p></main>`;
+  root.innerHTML = `<main class="gate"><p class="gate-loading">${esc(text)}</p></main>`;
 }
 
 // ---------- Data ----------
@@ -189,6 +189,7 @@ async function refresh() {
     const get = (k) => (raw.settings || []).find((r) => String(r?.[0] || '').trim() === k)?.[1];
     api.rememberStaySignedIn(get('app_token_url'), get('app_token_key'));
     state.plan = parseItems(raw.items, raw.settings, todayKey());
+    setPlace(urlPlace || state.plan.settings.tv_location?.value || '');
     state.loadedAt = Date.now();
     state.error = '';
     render();
@@ -292,27 +293,12 @@ function isNight() {
   return m >= NIGHT_FROM || m < NIGHT_TO;
 }
 
-// A faint field of stars, the same every time (seeded), drawn once.
-let skyHtml = '';
-function sky() {
-  if (skyHtml) return skyHtml;
-  let seed = 7;
-  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  const stars = Array.from({ length: 140 }, () => {
-    const r = rnd() < 0.85 ? 0.6 + rnd() * 0.6 : 1.2 + rnd() * 0.8;
-    return `<circle cx="${(rnd() * 1600).toFixed(1)}" cy="${(rnd() * 900).toFixed(1)}" r="${r.toFixed(2)}" opacity="${(0.15 + rnd() * 0.45).toFixed(2)}"/>`;
-  }).join('');
-  skyHtml = `<div class="sky" aria-hidden="true"><svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">${stars}</svg></div>`;
-  return skyHtml;
-}
-
 function render() {
   if (!state.plan) return;
   document.documentElement.classList.toggle('is-night', isNight());
   if (!$('#board')) {
     root.innerHTML = `
-      ${sky()}
-      <main class="board" id="board">
+        <main class="board" id="board">
         <section class="hero" id="hero"></section>
         <section class="col col-exam" id="exam"></section>
         <section class="col col-study" id="study"></section>
@@ -366,6 +352,8 @@ function renderHero() {
   const open = [...tasksOn(k), ...readingsOn(k)].filter(isOpen).length;
   const parts = [total ? `${plural(+fmtH(total), 'hour')} of study` : '', open ? plural(open, 'open task') : ''].filter(Boolean);
   const day = parts.length ? `${parts.join(' and ')} today.` : 'A free day.';
+  const w = weatherLine();
+  const weather = w ? `${w.replace(/^(-?\d+°), /, '$1 and ')}${placeName() ? ` in ${placeName()}` : ''}.` : '';
   const status = state.error ? `<p class="status">Offline. Showing the plan from ${new Date(state.loadedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}.</p>` : '';
   return `
     <div class="hero-time">
@@ -373,8 +361,9 @@ function renderHero() {
       <p class="clock">${pad(d.getHours())}<span class="colon">:</span>${pad(d.getMinutes())}</p>
     </div>
     <div class="hero-text">
-      <p class="summary">${esc(greeting())}. ${esc(day)}</p>
-      <p class="summary is-next">${esc(upNext())}</p>
+      <p class="summary">${esc(greeting())}.${weather ? ` ${esc(weather)}` : ''}</p>
+      <p class="summary is-sub">${esc(day)}</p>
+      <p class="summary is-sub">${esc(upNext())}</p>
       ${status}
     </div>`;
 }
@@ -559,7 +548,9 @@ function renderDay() {
       <path class="ahead" d="${path(now, to)}"/>
       ${now > from ? `<path class="flown" d="${path(from, now)}"/>` : ''}
       ${marks}
-      <circle cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="${(2.4 * R).toFixed(1)}" fill="url(#glow)"/>
+      <circle class="now-glow" cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="${(2.4 * R).toFixed(1)}" fill="url(#glow)" style="transform-origin:${nx.toFixed(1)}px ${ny.toFixed(1)}px"/>
+      <circle class="ripple" cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="${(0.55 * R).toFixed(1)}" style="transform-origin:${nx.toFixed(1)}px ${ny.toFixed(1)}px"/>
+      <circle class="ripple is-late" cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="${(0.55 * R).toFixed(1)}" style="transform-origin:${nx.toFixed(1)}px ${ny.toFixed(1)}px"/>
       <circle class="now" cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="${(0.55 * R).toFixed(1)}"/>
     </svg>
     ${allDay.length ? `<p class="all-day">All day: ${allDay.slice(0, 2).map((a) => esc(clip(a.title, 48))).join(', ')}${allDay.length > 2 ? `, and ${allDay.length - 2} more` : ''}</p>` : ''}
@@ -661,7 +652,11 @@ async function checkForUpdate() {
 
 // ---------- Boot ----------
 
+const urlPlace = new URLSearchParams(location.search).get('place') || '';
+
 async function boot() {
+  initSky($('#sky'), () => render());
+  if (urlPlace) setPlace(urlPlace);
   const night = new URLSearchParams(location.search).get('night');
   if (['auto', 'on', 'off'].includes(night)) { state.night = night; store.set('pg.tvNight', night); }
   document.documentElement.classList.toggle('is-night', isNight());
