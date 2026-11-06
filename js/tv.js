@@ -22,12 +22,12 @@
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=48';
-import * as cal from './calendar.js?v=48';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=48';
-import { initSky, setPlace, weatherIcon, weatherTemp, weatherText, placeName } from './sky.js?v=48';
+import * as api from './sheets.js?v=49';
+import * as cal from './calendar.js?v=49';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=49';
+import { initSky, setPlace, weatherIcon, weatherTemp, weatherText, placeName } from './sky.js?v=49';
 
-const BUILD = '48';
+const BUILD = '49';
 const REFRESH_MS = 2 * 60 * 1000;
 const CAL_MS = 5 * 60 * 1000;
 const EXAM_MIN = 120; // an exam counts as over two hours after it starts
@@ -183,7 +183,7 @@ async function start() {
   setInterval(tick, 1000);
   setInterval(() => refresh(), REFRESH_MS);
   setInterval(() => loadCalendar(), CAL_MS);
-  setInterval(checkForUpdate, 30 * 60 * 1000);
+  setInterval(checkForUpdate, 5 * 60 * 1000);
   keepAwake();
 }
 
@@ -906,6 +906,7 @@ document.addEventListener('keydown', (ev) => {
       ev.preventDefault();
       if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
       toast('Reloading the plan');
+      checkForUpdate();
       return refresh();
   }
 });
