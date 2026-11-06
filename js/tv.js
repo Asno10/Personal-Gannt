@@ -22,12 +22,12 @@
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=51';
-import * as cal from './calendar.js?v=51';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=51';
-import { initSky, setPlace, weatherIcon, weatherTemp, weatherText, placeName } from './sky.js?v=51';
+import * as api from './sheets.js?v=52';
+import * as cal from './calendar.js?v=52';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=52';
+import { initSky, setPlace, weatherIcon, weatherTemp, weatherText, placeName } from './sky.js?v=52';
 
-const BUILD = '51';
+const BUILD = '52';
 const REFRESH_MS = 2 * 60 * 1000;
 const CAL_MS = 5 * 60 * 1000;
 const EXAM_MIN = 120; // an exam counts as over two hours after it starts
@@ -719,7 +719,7 @@ function renderDay() {
   const ticks = [];
   for (let h = Math.ceil(from / 60); h <= 24; h++) {
     if (h % 3) continue;
-    ticks.push(`<text class="tick-label" x="${xOf(h * 60).toFixed(1)}" y="${(base + 1.9 * R).toFixed(1)}" text-anchor="middle">${pad(h % 24 === 0 && h ? 24 : h)}:00</text>`);
+    ticks.push(`<text class="tick-label" x="${xOf(h * 60).toFixed(1)}" y="${(base + 1.9 * R).toFixed(1)}" text-anchor="middle">${pad(h % 24)}:00</text>`);
     ticks.push(`<line class="tick" x1="${xOf(h * 60).toFixed(1)}" x2="${xOf(h * 60).toFixed(1)}" y1="${(base + 0.25 * R).toFixed(1)}" y2="${(base + 0.6 * R).toFixed(1)}"/>`);
   }
 
