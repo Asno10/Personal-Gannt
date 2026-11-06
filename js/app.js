@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=50';
-import * as cal from './calendar.js?v=50';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=50';
+import * as api from './sheets.js?v=51';
+import * as cal from './calendar.js?v=51';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=51';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -69,7 +69,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '50';
+const BUILD = '51';
 
 async function checkForUpdate() {
   try {
@@ -487,20 +487,47 @@ function flagRowSheet(f) {
   { onOpen(form) { wireFlag(form, f, null); } });
 }
 
+// Writes one value in the Settings tab, adding the key on a new row if it is
+// not there yet.
+async function saveSetting(key, value) {
+  const s = state.plan.settings[key];
+  if (s) return api.writeCells([{ range: api.a1(CONFIG.sheets.settings, `B${s.row}`), value }]);
+  const row = (state.raw.settings || []).length + 1;
+  return api.writeCells([
+    { range: api.a1(CONFIG.sheets.settings, `A${row}`), value: key },
+    { range: api.a1(CONFIG.sheets.settings, `B${row}`), value },
+  ]);
+}
+
 // ---------- Archive ----------
 // Moves rows that ended before today to the "Archive: Items" tab and starts
 // the chart from today. Kept: open tasks and readings (they show as overdue),
 // and study plans and logs of subjects with an exam still ahead, which the
-// exam cards need for their progress figures.
+// exam cards need for their progress figures. Unfinished readings for a
+// subject with nothing planned ahead can go too, when the person ticks that.
 
 function lastDayOf(i) {
   return [i.end || i.start, ...Object.keys(i.cells)].filter(Boolean).sort().at(-1) || '';
 }
 
-function archiveCandidates(tk) {
+// Open readings dated before today for subjects with nothing ahead: no exam
+// and no planned study hours from today on (say, the course's exam is over
+// and already archived).
+function staleReadings(tk) {
+  const ahead = new Set([
+    ...state.plan.exams.filter((e) => (e.end || e.start) >= tk).map((e) => e.subject),
+    ...state.plan.study.filter((x) => Object.keys(x.cells).some((d) => d >= tk && toNumber(x.cells[d]) > 0)).map((x) => x.subject),
+  ]);
+  return state.plan.items.filter((i) => i.id && i.type === 'reading' && i.status.status !== 'done'
+    && lastDayOf(i) && lastDayOf(i) < tk && i.subject && !ahead.has(i.subject));
+}
+
+function archiveCandidates(tk, { stale = false } = {}) {
   const examAhead = new Set(state.plan.exams.filter((e) => (e.end || e.start) >= tk).map((e) => e.subject));
+  const extra = new Set(stale ? staleReadings(tk) : []);
   return state.plan.items.filter((i) => {
     if (!i.id) return false;
+    if (extra.has(i)) return true;
     const last = lastDayOf(i);
     const past = Boolean(last) && last < tk;
     if (i.type === 'task' || i.type === 'reading') return i.status.status === 'done' && (past || (!last && i.doneOn && i.doneOn < tk));
@@ -517,7 +544,8 @@ function archiveSheet() {
   const by = {};
   for (const i of list) by[i.type] = (by[i.type] || 0) + 1;
   const parts = Object.entries(by).map(([t, n]) => { const l = ARCH_LABEL[t] || ['other item', 'other items']; return `${n} ${n === 1 ? l[0] : l[1]}`; });
-  const overdue = allTasks().concat(readings()).filter((t) => isOverdue(t)).length;
+  const stale = staleReadings(tk);
+  const overdue = allTasks().concat(readings()).filter((t) => isOverdue(t) && !stale.includes(t)).length;
   const already = state.plan.days[0]?.key === tk;
   openSheet(`
     ${sheetHead('Archive the past?', `The chart will start from today, ${longLabel(tk)}.`)}
@@ -526,6 +554,7 @@ function archiveSheet() {
         ? `<p><b>${plural(list.length, 'item')}</b> that ended before today will move to the <b>Archive: Items</b> tab of your sheet and leave the app:</p><p class="arch-parts">${esc(parts.join(', '))}</p>`
         : `<p>No items ended before today, so nothing moves to the archive.${already ? ' The chart already starts today.' : ''}</p>`}
     </div>
+    ${stale.length ? `<label class="arch-opt"><input type="checkbox" name="stale" value="1" checked><span>Also archive <b>${plural(stale.length, 'unfinished reading')}</b> for subjects with nothing planned ahead (${esc([...new Set(stale.map((r) => r.subject))].join(', '))})</span></label>` : ''}
     <ul class="arch-keep">
       ${overdue ? `<li>${plural(overdue, 'overdue task or reading', 'overdue tasks and readings')} stay${overdue === 1 ? 's' : ''} in the plan.</li>` : ''}
       <li>Study hours for exams still ahead are kept, so exam progress stays correct.</li>
@@ -534,16 +563,16 @@ function archiveSheet() {
     <p class="dlg-sub arch-warn">This cannot be undone in the app. Archived rows can be copied back to the Items tab by hand.</p>
     <div class="dlg-actions">
       <button class="btn btn-quiet" value="cancel" formnovalidate>Cancel</button><span class="spacer"></span>
-      <button class="btn btn-primary btn-danger-fill" value="archive">${list.length ? `Archive ${plural(list.length, 'item')}` : 'Start from today'}</button>
+      <button class="btn btn-primary btn-danger-fill" value="archive">${list.length || stale.length ? 'Archive' : 'Start from today'}</button>
     </div>`,
-  (d, which) => { if (which === 'archive') archivePast(); });
+  (d, which) => { if (which === 'archive') archivePast({ stale: d.stale === '1' }); });
 }
 
-async function archivePast() {
+async function archivePast(opts = {}) {
   await flush();
   await refresh(); // work from the sheet as it is now
   const tk = todayKey();
-  const list = archiveCandidates(tk);
+  const list = archiveCandidates(tk, opts);
   pendingOps++;
   setSync('saving');
   try {

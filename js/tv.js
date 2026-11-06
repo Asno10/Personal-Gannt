@@ -22,12 +22,12 @@
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=50';
-import * as cal from './calendar.js?v=50';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=50';
-import { initSky, setPlace, weatherIcon, weatherTemp, weatherText, placeName } from './sky.js?v=50';
+import * as api from './sheets.js?v=51';
+import * as cal from './calendar.js?v=51';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=51';
+import { initSky, setPlace, weatherIcon, weatherTemp, weatherText, placeName } from './sky.js?v=51';
 
-const BUILD = '50';
+const BUILD = '51';
 const REFRESH_MS = 2 * 60 * 1000;
 const CAL_MS = 5 * 60 * 1000;
 const EXAM_MIN = 120; // an exam counts as over two hours after it starts

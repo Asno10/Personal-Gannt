@@ -1113,3 +1113,6 @@ button.event { width: 100%; text-align: left; }
 .tl-more button svg { width: 15px; height: 15px; transform: rotate(-90deg); }
 .tl-more button.is-open svg, .tl-more button[aria-expanded="true"] svg { transform: none; }
 @media (prefers-reduced-motion: reduce) { .fold svg, .more-toggle svg, .tl-more button svg, .exam .fold-chart { transition: none; } }
+
+.arch-opt { display: flex; align-items: flex-start; gap: 10px; margin: 14px 0 4px; font-size: 0.95rem; line-height: 1.4; cursor: pointer; }
+.arch-opt input { flex: none; width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--accent, #0a84ff); }
