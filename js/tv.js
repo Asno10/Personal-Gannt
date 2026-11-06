@@ -22,12 +22,12 @@
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=49';
-import * as cal from './calendar.js?v=49';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=49';
-import { initSky, setPlace, weatherIcon, weatherTemp, weatherText, placeName } from './sky.js?v=49';
+import * as api from './sheets.js?v=50';
+import * as cal from './calendar.js?v=50';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=50';
+import { initSky, setPlace, weatherIcon, weatherTemp, weatherText, placeName } from './sky.js?v=50';
 
-const BUILD = '49';
+const BUILD = '50';
 const REFRESH_MS = 2 * 60 * 1000;
 const CAL_MS = 5 * 60 * 1000;
 const EXAM_MIN = 120; // an exam counts as over two hours after it starts
@@ -337,7 +337,7 @@ function render() {
   put('#hero', renderHero());
   put('#exam', renderExam());
   put('#study', renderStudy(), fitList);
-  put('#tasks', renderTasks(), fitList);
+  put('#tasks', renderTasks(), fitTasks);
   put('#week', renderWeek());
   put('#day', renderDay());
   put('#plan', renderPlan());
@@ -442,12 +442,17 @@ function renderStudy() {
     <p class="more" hidden></p>`;
 }
 
+// Today's tasks, open ones first. Overdue tasks from earlier days are one
+// line at the end (each is on the plan page). fitTasks then makes the list
+// fit: smaller type and single lines as it grows, and if it still does not
+// fit, it scrolls one task at a time.
 function renderTasks() {
   const k = todayKey();
   const tasks = [...tasksOn(k), ...readingsOn(k)];
   const open = tasks.filter(isOpen);
   const done = tasks.filter((t) => !isOpen(t));
   const overdue = [...ofType('task'), ...ofType('reading')].filter((t) => isOpen(t) && taskDue(t) && taskDue(t) < k && !tasks.includes(t));
+  const oldest = overdue.map(taskDue).sort()[0];
   const row = (t, cls, meta) => `
     <li class="${cls}">
       <span class="tick" aria-hidden="true"></span>
@@ -457,12 +462,38 @@ function renderTasks() {
   return `
     ${colHead('Tasks', tasks.length ? `${done.length} of ${tasks.length} done` : '')}
     ${tasks.length || overdue.length ? `
-      <ul class="fit tasks">
-        ${open.map((t) => row(t, '', metaOf(t))).join('')}
-        ${overdue.map((t) => row(t, 'is-late', `Overdue since ${esc(shortDate(taskDue(t)))}`)).join('')}
-        ${done.map((t) => row(t, 'is-done', '')).join('')}
-      </ul>` : '<p class="empty">Nothing on the list today.</p>'}
-    <p class="more" hidden></p>`;
+      <div class="scroll-view">
+        <ul class="tasks scroll-list">
+          ${open.map((t) => row(t, '', metaOf(t))).join('')}
+          ${done.map((t) => row(t, 'is-done', '')).join('')}
+          ${!tasks.length ? '<li class="is-empty"><span class="task-body"><span class="task-title">Nothing planned for today</span></span></li>' : ''}
+        </ul>
+      </div>
+      ${overdue.length ? `<p class="overdue"><b>${overdue.length}</b> overdue since ${dateOfKey(oldest).getDate()} ${MON[dateOfKey(oldest).getMonth()]}</p>` : ''}` : '<p class="empty">Nothing on the list today.</p>'}`;
+}
+
+// Tries denser layouts until the list fits; scrolls if even the densest does not.
+function fitTasks(el) {
+  const view = $('.scroll-view', el);
+  const list = $('.scroll-list', el);
+  clearInterval(el._scroll);
+  if (!view || !list) return;
+  const fits = () => list.scrollHeight <= view.clientHeight + 1;
+  let d = 0;
+  list.dataset.d = '0';
+  while (!fits() && d < 5) list.dataset.d = String(++d);
+  view.classList.toggle('is-scrolling', !fits());
+  if (fits() || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  const n = list.children.length;
+  [...list.children].forEach((li) => { const c = li.cloneNode(true); c.setAttribute('aria-hidden', 'true'); list.appendChild(c); });
+  const items = [...list.children];
+  let i = 0;
+  el._scroll = setInterval(() => {
+    i++;
+    list.style.transition = 'transform 1.1s cubic-bezier(0.32, 0.72, 0, 1)';
+    list.style.transform = `translateY(${-items[i].offsetTop}px)`;
+    if (i === n) setTimeout(() => { list.style.transition = 'none'; list.style.transform = 'none'; i = 0; }, 1200);
+  }, 4500);
 }
 
 function renderWeek() {
