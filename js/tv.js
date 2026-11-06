@@ -19,12 +19,12 @@
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=44';
-import * as cal from './calendar.js?v=44';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=44';
-import { initSky, setPlace, weatherLine, placeName } from './sky.js?v=44';
+import * as api from './sheets.js?v=45';
+import * as cal from './calendar.js?v=45';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=45';
+import { initSky, setPlace, weatherLine, placeName } from './sky.js?v=45';
 
-const BUILD = '44';
+const BUILD = '45';
 const REFRESH_MS = 2 * 60 * 1000;
 const CAL_MS = 5 * 60 * 1000;
 const EXAM_MIN = 120; // an exam counts as over two hours after it starts
@@ -448,6 +448,10 @@ function renderWeek() {
   const max = Math.max(1, ...totals);
   const sum = totals.reduce((a, b) => a + b, 0);
   const examDays = new Set(P().exams.map((e) => e.start));
+  // The legend: each subject planned this week, in the sheet's order, and the
+  // exam marker when an exam falls in the week.
+  const subjects = P().study.filter((s) => days.some((d) => toNumber(s.cells[d]) > 0));
+  const hasExam = days.some((d) => examDays.has(d));
   return `
     ${colHead('This week', sum ? `${fmtH(sum)} h` : '')}
     <div class="week">
@@ -455,18 +459,21 @@ function renderWeek() {
         const dt = dateOfKey(d);
         return `
           <div class="wk ${i === 0 ? 'is-today' : ''}">
-            <span class="wk-h">${totals[i] ? fmtH(totals[i]) : ''}</span>
+            <span class="wk-h">${totals[i] ? fmtH(totals[i]) : ''}${examDays.has(d) ? '<i class="wk-ex" title="Exam"></i>' : ''}</span>
             <div class="wk-track">
               <div class="wk-bar" style="height:${((totals[i] / max) * 100).toFixed(1)}%">
                 ${studyOn(d).map((s) => `<span style="--c:${colorOf(s.item.subject)};flex:${s.hours}"></span>`).join('')}
               </div>
             </div>
-            <span class="wk-exam">${examDays.has(d) ? '<i title="Exam"></i>' : ''}</span>
             <span class="wk-day">${esc(dt.toLocaleDateString('en-GB', { weekday: 'narrow' }))}</span>
-            <span class="wk-num">${dt.getDate()}</span>
           </div>`;
       }).join('')}
-    </div>`;
+    </div>
+    ${subjects.length || hasExam ? `
+      <ul class="legend">
+        ${subjects.map((x) => `<li style="--c:${colorOf(x.subject)}"><i></i>${esc(x.subject)}</li>`).join('')}
+        ${hasExam ? '<li class="is-exam"><i></i>Exam</li>' : ''}
+      </ul>` : ''}`;
 }
 
 // The day as a trajectory: an arch from morning to midnight. The part already

@@ -126,8 +126,8 @@ b, em { font-weight: inherit; font-style: inherit; }
   position: fixed;
   inset: 0;
   display: grid;
-  grid-template-columns: 0.88fr 1.06fr 1.26fr 1fr;
-  grid-template-rows: auto minmax(0, 1fr) 13.5rem;
+  grid-template-columns: 0.82fr 0.98fr 1.14fr 1.3fr;
+  grid-template-rows: auto minmax(0, 1fr) 12.5rem;
   grid-template-areas:
     "hero hero  hero  hero"
     "exam study tasks week"
@@ -161,7 +161,7 @@ b, em { font-weight: inherit; font-style: inherit; }
 @keyframes beat { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 .wx { margin-left: 1.6rem; padding-left: 1.6rem; border-left: 1px solid var(--dusk); color: var(--starlight); font-weight: 400; }
 .hero-text { min-width: 0; padding-bottom: 1.2rem; }
-.summary { max-width: 58rem; font: 300 2.4rem/1.35 var(--sans); }
+.summary { max-width: 62rem; font: 300 2.2rem/1.35 var(--sans); }
 .summary.is-sub { margin-top: 0.4rem; color: var(--haze); }
 .status { margin-top: 1rem; font: 400 1.4rem var(--sans); color: var(--flare); }
 
@@ -236,19 +236,21 @@ b, em { font-weight: inherit; font-style: inherit; }
 .tasks li.is-done .task-title { color: var(--haze-2); text-decoration: line-through; text-decoration-thickness: 0.08rem; }
 
 /* This week */
-.week { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); gap: 0.5rem; }
+.col-exam { overflow: visible; }
+.legend { flex: none; display: flex; flex-wrap: wrap; gap: 0.4rem 1.3rem; margin-top: 1rem; }
+.legend li { display: flex; align-items: center; gap: 0.55rem; font: 400 1.25rem/1.25 var(--sans); color: var(--haze); white-space: nowrap; }
+.legend i { flex: none; width: 0.9rem; height: 0.9rem; border-radius: 0.25rem; background: var(--c); }
+.legend .is-exam i { width: 0.7rem; height: 0.7rem; border-radius: 0; background: var(--ember); transform: rotate(45deg); box-shadow: 0 0 0.7rem var(--ember); }
+.week { flex: 1; min-height: 8rem; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); gap: 0.5rem; }
 .wk { display: flex; flex-direction: column; align-items: center; min-height: 0; }
-.wk-h { height: 2rem; font: 300 1.3rem/2rem var(--sans); color: var(--haze); font-variant-numeric: tabular-nums; }
+.wk-h { display: flex; align-items: center; gap: 0.35rem; height: 1.8rem; font: 300 1.3rem/1.8rem var(--sans); color: var(--haze); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wk-ex { flex: none; width: 0.6rem; height: 0.6rem; background: var(--ember); transform: rotate(45deg); box-shadow: 0 0 0.7rem var(--ember); }
 .wk-track { position: relative; flex: 1; width: 100%; display: flex; justify-content: center; align-items: flex-end; margin: 0.3rem 0 0.7rem; }
 .wk-track::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: var(--dusk); opacity: 0.6; }
 .wk-bar { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); width: 1.5rem; display: flex; flex-direction: column-reverse; gap: 0.18rem; border-radius: 1rem; overflow: hidden; }
 .wk-bar span { min-height: 0.3rem; background: var(--c); }
-.wk-exam { height: 1.5rem; display: grid; place-items: center; }
-.wk-exam i { width: 0.75rem; height: 0.75rem; background: var(--ember); transform: rotate(45deg); box-shadow: 0 0 0.9rem var(--ember); }
-.wk-day { font: 500 1.4rem/1 var(--sans); color: var(--haze); }
-.wk-num { margin-top: 0.3rem; font: 300 1.55rem/1.1 var(--sans); font-variant-numeric: tabular-nums; }
-.wk.is-today .wk-day, .wk.is-today .wk-num { color: var(--ember); }
-.wk.is-today .wk-num { font-weight: 500; }
+.wk-day { display: grid; place-items: center; width: 2.4rem; height: 2.4rem; border-radius: 50%; font: 500 1.4rem/1 var(--sans); color: var(--haze); }
+.wk.is-today .wk-day { background: var(--ember); color: #1a1206; text-shadow: none; }
 
 /* ---------- The day's trajectory ---------- */
 
@@ -256,8 +258,7 @@ b, em { font-weight: inherit; font-style: inherit; }
 .arc .horizon { stroke: var(--dusk); stroke-width: 1; }
 .arc .tick { stroke: var(--dusk); stroke-width: 1; }
 .arc .tick-label { font: 300 1.25rem var(--sans); fill: var(--haze-2); }
-.arc .ahead { fill: none; stroke: rgb(255 255 255 / 0.4); stroke-width: 0.2rem; stroke-dasharray: 0.2rem 0.7rem; stroke-linecap: round; animation: flow 3s linear infinite; }
-@keyframes flow { to { stroke-dashoffset: -1.8rem; } }
+.arc .ahead { fill: none; stroke: rgb(255 255 255 / 0.4); stroke-width: 0.2rem; stroke-dasharray: 0.2rem 0.7rem; stroke-linecap: round; }
 .arc .ripple { fill: none; stroke: var(--ember); stroke-width: 0.15rem; animation: ripple 3.2s ease-out infinite; }
 .arc .ripple.is-late { animation-delay: 1.6s; }
 @keyframes ripple { from { transform: scale(1); opacity: 0.9; } to { transform: scale(5); opacity: 0; } }
