@@ -17,6 +17,7 @@
   --flare: #ff7b6b;
   --s0: #6fa8ff; --s1: #5fd8e6; --s2: #9c8cff; --s3: #ff7fa0;
   --s4: #6ee7a0; --s5: #d58cff; --s6: #f4c66a; --s7: #c3cce0;
+  --wx-sun: #ffd25e; --wx-moon: #f1efe4; --wx-cloud: #f4f6fb; --wx-rain: #7cc4ff;
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", "Helvetica Neue", system-ui, sans-serif;
   color-scheme: dark;
   font-size: min(1vw, 1.7778vh);
@@ -34,6 +35,7 @@
   --flare: #ff3b30;
   --s0: #e5392e; --s1: #c9322a; --s2: #ff5a50; --s3: #b02a22;
   --s4: #e5392e; --s5: #c9322a; --s6: #ff5a50; --s7: #b02a22;
+  --wx-sun: #ff3b30; --wx-moon: #ff3b30; --wx-cloud: #c9322a; --wx-rain: #ff5a50;
 }
 :root.is-night .sky { opacity: 0; }
 
@@ -157,7 +159,7 @@ b, em { font-weight: inherit; font-style: inherit; }
 .plan-range { margin-top: 0.6rem; font: 300 1.9rem var(--sans); color: var(--haze); }
 .plan-now { text-align: right; }
 .plan-clock { font: 200 4.8rem/0.9 var(--sans); letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
-.plan-wx { margin-top: 0.6rem; font: 400 1.6rem var(--sans); color: var(--haze); }
+.plan-wx { margin-top: 0.6rem; font: 400 1.9rem var(--sans); color: var(--starlight); }
 .gantt { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .g-row { display: flex; align-items: center; height: 2.45rem; }
 .g-label { flex: none; width: var(--lw); display: flex; align-items: center; gap: 0.8rem; padding-right: 1.6rem; min-width: 0; }
@@ -218,10 +220,23 @@ b, em { font-weight: inherit; font-style: inherit; }
 }
 .colon { display: inline-block; margin: 0 0.04em; transform: translateY(-0.06em); color: var(--ember); animation: beat 2s ease-in-out infinite; }
 @keyframes beat { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
-.wx { margin-left: 1.6rem; padding-left: 1.6rem; border-left: 1px solid var(--dusk); color: var(--starlight); font-weight: 400; }
+.wx { display: inline-flex; align-items: center; gap: 0.6rem; margin-left: 1.6rem; padding-left: 1.6rem; border-left: 1px solid var(--dusk); color: var(--starlight); font-weight: 400; vertical-align: top; }
+.wx-icon { flex: none; width: 1.25em; height: 1.25em; overflow: visible; filter: drop-shadow(0 0.1rem 0.5rem rgb(0 10 30 / 0.3)); }
+.wx-icon * { stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.i-sun circle { fill: var(--wx-sun); }
+.i-sun path { fill: none; stroke: var(--wx-sun); }
+.i-moon { fill: var(--wx-moon); }
+.i-cloud { fill: var(--wx-cloud); }
+.i-rain { fill: none; stroke: var(--wx-rain); stroke-width: 2; }
+.i-snow circle { fill: var(--wx-cloud); }
+.i-bolt { fill: var(--wx-sun); }
+.i-fog { fill: none; stroke: var(--wx-cloud); stroke-width: 2; }
+.plan-wx { display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; }
+.plan-wx .wx-icon { width: 2.2rem; height: 2.2rem; }
+.plan-wx span { margin-left: 0.4rem; color: var(--haze); }
 .hero-text { min-width: 0; padding-bottom: 1.2rem; }
-.summary { max-width: 62rem; font: 300 2.2rem/1.35 var(--sans); }
-.summary.is-sub { margin-top: 0.4rem; color: var(--haze); }
+.summary { max-width: 64rem; font: 300 2.25rem/1.35 var(--sans); }
+.summary.is-sub { margin-top: 0.4rem; color: var(--haze); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .status { margin-top: 1rem; font: 400 1.4rem var(--sans); color: var(--flare); }
 
 /* ---------- Next exam ---------- */

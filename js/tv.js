@@ -22,12 +22,12 @@
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=47';
-import * as cal from './calendar.js?v=47';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=47';
-import { initSky, setPlace, weatherLine, placeName } from './sky.js?v=47';
+import * as api from './sheets.js?v=48';
+import * as cal from './calendar.js?v=48';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=48';
+import { initSky, setPlace, weatherIcon, weatherTemp, weatherText, placeName } from './sky.js?v=48';
 
-const BUILD = '47';
+const BUILD = '48';
 const REFRESH_MS = 2 * 60 * 1000;
 const CAL_MS = 5 * 60 * 1000;
 const EXAM_MIN = 120; // an exam counts as over two hours after it starts
@@ -282,17 +282,18 @@ function agenda(k) {
 // The item happening now, or the next one later today, or tomorrow's first.
 function upNext() {
   const now = nowMin();
+  const name = (a) => a.title.replace(/^study:\s*/i, '');
   const today = agenda(todayKey()).filter((a) => a.start != null);
   const current = today.find((a) => a.start <= now && now < (a.end ?? a.start + 30));
-  if (current) return `Now, ${current.end ? `until ${hhmm(current.end)}` : `since ${hhmm(current.start)}`}: ${current.title}.`;
+  if (current) return `Now, ${current.end ? `until ${hhmm(current.end)}` : `since ${hhmm(current.start)}`}: ${name(current)}.`;
   const later = today.find((a) => a.start > now);
   if (later) {
     const n = later.start - now;
     const soon = n < 60 ? `, in ${plural(n, 'minute')}` : '';
-    return `Next at ${hhmm(later.start)}${soon}: ${later.title}.`;
+    return `Next at ${hhmm(later.start)}${soon}: ${name(later)}.`;
   }
   const tomorrow = agenda(addDays(todayKey(), 1)).find((a) => a.start != null);
-  if (tomorrow) return `Nothing else today. Tomorrow at ${hhmm(tomorrow.start)}: ${tomorrow.title}.`;
+  if (tomorrow) return `Nothing else today. Tomorrow at ${hhmm(tomorrow.start)}: ${name(tomorrow)}.`;
   return 'Nothing else on the calendar today.';
 }
 
@@ -378,17 +379,14 @@ function renderHero() {
   const open = [...tasksOn(k), ...readingsOn(k)].filter(isOpen).length;
   const parts = [total ? `${plural(+fmtH(total), 'hour')} of study` : '', open ? plural(open, 'open task') : ''].filter(Boolean);
   const day = parts.length ? `${parts.join(' and ')} today.` : 'A free day.';
-  const w = weatherLine();
-  const weather = w ? `${w.replace(/^(-?\d+°), /, '$1 and ')}${placeName() ? ` in ${placeName()}` : ''}.` : '';
   const status = state.error ? `<p class="status">Offline. Showing the plan from ${new Date(state.loadedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}.</p>` : '';
   return `
     <div class="hero-time">
-      <p class="date">${esc(d.toLocaleDateString('en-GB', { weekday: 'long' }))}, ${d.getDate()} ${esc(d.toLocaleDateString('en-GB', { month: 'long' }))}</p>
+      <p class="date">${esc(d.toLocaleDateString('en-GB', { weekday: 'long' }))}, ${d.getDate()} ${esc(d.toLocaleDateString('en-GB', { month: 'long' }))}${weatherTemp() ? `<span class="wx" title="${esc(`${weatherText()}${placeName() ? ` in ${placeName()}` : ''}`)}">${weatherIcon()}${esc(weatherTemp())}</span>` : ''}</p>
       <p class="clock">${pad(d.getHours())}<span class="colon">:</span>${pad(d.getMinutes())}</p>
     </div>
     <div class="hero-text">
-      <p class="summary">${esc(greeting())}.${weather ? ` ${esc(weather)}` : ''}</p>
-      <p class="summary is-sub">${esc(day)}</p>
+      <p class="summary">${esc(greeting())}. ${esc(day)}</p>
       <p class="summary is-sub">${esc(upNext())}</p>
       ${status}
     </div>`;
@@ -639,7 +637,7 @@ function renderPlan() {
   }
 
   const d = new Date();
-  const w = weatherLine();
+  const w = weatherTemp();
   return `
     <header class="plan-head">
       <div>
@@ -648,7 +646,7 @@ function renderPlan() {
       </div>
       <div class="plan-now">
         <p class="plan-clock">${pad(d.getHours())}<span class="colon">:</span>${pad(d.getMinutes())}</p>
-        ${w ? `<p class="plan-wx">${esc(w)}</p>` : ''}
+        ${w ? `<p class="plan-wx">${weatherIcon()}${esc(w)}<span>${esc(weatherText())}</span></p>` : ''}
       </div>
     </header>
     <div class="gantt" style="--lw:${LABEL_REM}rem">

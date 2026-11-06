@@ -47,13 +47,45 @@ function precipOf(code) {
   return { kind: '', amount: 0 };
 }
 
-// "14°, partly cloudy", or '' before the first reading.
+// "14°, partly cloudy", or an empty string before the first reading.
 export function weatherLine() {
   if (!wx) return '';
   return `${Math.round(wx.temp)}°, ${WMO[wx.code] || 'cloudy'}`;
 }
 
 export const placeName = () => place?.name || '';
+
+// A weather glyph for the current conditions, as inline SVG on a 24-unit
+// grid: sun or moon (after dark), cloud, rain, snow, fog or lightning. Its
+// colours come from CSS (--wx-sun, --wx-cloud, --wx-rain), so night mode can
+// turn them red.
+export function weatherIcon() {
+  if (!wx) return '';
+  const night = sun(new Date(), place.lat, place.lon).elev < -2;
+  const c = wx.code;
+  const SUN = '<g class="i-sun"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"/></g>';
+  const SUN_SMALL = '<g class="i-sun"><circle cx="8.5" cy="8.5" r="3.2"/><path d="M8.5 1.8v1.6M1.8 8.5h1.6M3.8 3.8l1.1 1.1M13.2 3.8l-1.1 1.1M3.8 13.2l1.1-1.1"/></g>';
+  const MOON = '<path class="i-moon" d="M15.5 3.2a8.6 8.6 0 1 0 5.3 13.6A7 7 0 0 1 15.5 3.2z"/>';
+  const MOON_SMALL = '<path class="i-moon" d="M10.4 1.8a6.2 6.2 0 1 0 3.8 9.9 5 5 0 0 1-3.8-9.9z"/>';
+  const CLOUD = (y = 0) => `<path class="i-cloud" transform="translate(0 ${y})" d="M7 19h10.2a4.3 4.3 0 0 0 .4-8.6A6 6 0 0 0 6.1 12 3.6 3.6 0 0 0 7 19z"/>`;
+  const RAIN = (heavy) => `<path class="i-rain" d="M8.5 19.8l-1 2.4M12.5 19.8l-1 2.4M16.5 19.8l-1 2.4${heavy ? 'M10.5 19.8l-1 2.4M14.5 19.8l-1 2.4' : ''}"/>`;
+  const SNOW = '<g class="i-snow"><circle cx="8.5" cy="21" r="1"/><circle cx="12.5" cy="22.3" r="1"/><circle cx="16.5" cy="21" r="1"/></g>';
+  const BOLT = '<path class="i-bolt" d="M12.8 15.5l-2.6 4.2h3l-1.8 3.8 4.6-5.4h-3l1.8-2.6z"/>';
+  const FOG = '<path class="i-fog" d="M4 9.5h16M6 13.5h12M4 17.5h16"/>';
+  let body;
+  if (c === 0 || c === 1) body = night ? MOON : SUN;
+  else if (c === 2) body = (night ? MOON_SMALL : SUN_SMALL) + CLOUD(1);
+  else if (c === 3) body = CLOUD(-1);
+  else if (c === 45 || c === 48) body = FOG;
+  else if ([95, 96, 99].includes(c)) body = CLOUD(-3) + BOLT;
+  else if ([71, 73, 75, 77, 85, 86].includes(c)) body = CLOUD(-3) + SNOW;
+  else if (precipOf(c).kind === 'rain') body = CLOUD(-3) + RAIN(precipOf(c).amount >= 0.7);
+  else body = CLOUD(-1);
+  return `<svg class="wx-icon" viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
+}
+
+export const weatherTemp = () => (wx ? `${Math.round(wx.temp)}°` : '');
+export const weatherText = () => (wx ? WMO[wx.code] || 'cloudy' : '');
 
 // tv_location: a place name ("Balıkesir") or "latitude, longitude".
 export async function setPlace(query) {
