@@ -295,7 +295,7 @@ b, em { font-weight: inherit; font-style: inherit; }
 .tasks li.is-done .task-title { color: var(--haze-2); text-decoration: line-through; text-decoration-thickness: 0.08rem; }
 
 /* This week */
-.col-exam { overflow: visible; }
+.col-exam { padding-left: 0.5rem; margin-left: -0.5rem; }
 .legend { flex: none; display: flex; flex-wrap: wrap; gap: 0.4rem 1.3rem; margin-top: 1rem; }
 .legend li { display: flex; align-items: center; gap: 0.55rem; font: 400 1.25rem/1.25 var(--sans); color: var(--haze); white-space: nowrap; }
 .legend i { flex: none; width: 0.9rem; height: 0.9rem; border-radius: 0.25rem; background: var(--c); }

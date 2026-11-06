@@ -22,12 +22,12 @@
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=46';
-import * as cal from './calendar.js?v=46';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=46';
-import { initSky, setPlace, weatherLine, placeName } from './sky.js?v=46';
+import * as api from './sheets.js?v=47';
+import * as cal from './calendar.js?v=47';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=47';
+import { initSky, setPlace, weatherLine, placeName } from './sky.js?v=47';
 
-const BUILD = '46';
+const BUILD = '47';
 const REFRESH_MS = 2 * 60 * 1000;
 const CAL_MS = 5 * 60 * 1000;
 const EXAM_MIN = 120; // an exam counts as over two hours after it starts
@@ -694,17 +694,19 @@ function renderDay() {
     ticks.push(`<line class="tick" x1="${xOf(h * 60).toFixed(1)}" x2="${xOf(h * 60).toFixed(1)}" y1="${(base + 0.25 * R).toFixed(1)}" y2="${(base + 0.6 * R).toFixed(1)}"/>`);
   }
 
-  // Labels sit in two tidy rows above the arch, each starting at its event's
-  // dot and joined to it by a thin line. An event takes the row nearer the
-  // arch when there is room, else the upper one; a title is shortened to the
-  // space before the next label in its row.
+  // Labels sit in two rows above the arch, each joined to its dot by a thin
+  // line, reading rightwards from the dot or ending at it. The layout is
+  // chosen by a small search that shows as much of every title as it can,
+  // with two rules that keep it tidy: a label always touches its own line, and
+  // no line runs through another label (a lower-row label never covers
+  // another event's dot).
   const family = getComputedStyle(document.documentElement).getPropertyValue('--sans') || 'sans-serif';
   const mctx = (renderDay.canvas ||= document.createElement('canvas')).getContext('2d');
   const measure = (text, weight, size) => { mctx.font = `${weight} ${size}px ${family}`; return mctx.measureText(text).width; };
   const TS = 1.35 * R;
   const TT = 1.5 * R;
   const GAP = 0.55 * R;
-  const SEP = 1.8 * R;
+  const SEP = 2.2 * R;
   const ROW_Y = [1.6 * R, 4.1 * R];
   const right = W - padX;
   let allDayHtml = '';
@@ -717,39 +719,71 @@ function renderDay() {
     row0Right = right - measure(text, 300, 1.4 * R) - SEP;
     allDayHtml = `<text class="all-day" x="${right.toFixed(1)}" y="${ROW_Y[0].toFixed(1)}" text-anchor="end">${esc(text)}</text>`;
   }
-  const rowRight = [row0Right, right];
   const labels = timed.map((a) => {
     const time = hhmm(a.start);
     const title = a.title.replace(/^study:\s*/i, '');
     const tw = measure(time, 500, TS);
-    return { a, x: xOf(a.start), y: yOf(a.start), time, title, tw, minW: tw + GAP + measure('Abcdefg\u2026', 400, TT) };
+    return { a, x: xOf(a.start), y: yOf(a.start), time, title, tw, full: tw + GAP + measure(title, 400, TT) };
   });
-  const rowEnd = [-Infinity, -Infinity];
-  for (const l of labels) {
-    const fits = (r) => {
-      const lx = Math.max(Math.min(l.x, rowRight[r] - l.minW), rowEnd[r] + SEP);
-      return lx + l.minW <= rowRight[r] + 0.5 && lx <= l.x + 0.5 ? lx : null;
+  const HALF = 0.3 * R;
+  const options = (l, n, st) => {
+    const prevX = n ? labels[n - 1].x : -Infinity;
+    const nextX = n + 1 < labels.length ? labels[n + 1].x : Infinity;
+    const out = [];
+    const add = (row, side, w) => {
+      w = Math.min(l.full, w);
+      if (w >= l.tw) out.push({ row, side, w, lx: side === 'right' ? l.x - HALF : l.x + HALF - w });
     };
-    let r = [1, 0].find((row) => fits(row) != null);
-    if (r == null) r = rowEnd[1] <= rowEnd[0] ? 1 : 0;
-    l.row = r;
-    l.lx = fits(r) ?? Math.max(padX, Math.min(l.x, rowRight[r] - l.tw));
-    rowEnd[r] = l.lx + l.minW;
-  }
-  for (const r of [0, 1]) {
-    const inRow = labels.filter((l) => l.row === r).sort((p, q) => p.lx - q.lx);
-    inRow.forEach((l, n) => {
-      const limit = n + 1 < inRow.length ? inRow[n + 1].lx - SEP : rowRight[r];
-      const room = limit - l.lx - l.tw - GAP;
-      let t = l.title;
-      if (measure(t, 400, TT) > room) {
-        while (t.length > 1 && measure(t + '\u2026', 400, TT) > room) t = t.slice(0, -1);
-        t = t.trimEnd().replace(/[,;:]$/, '') + '\u2026';
+    if (st.end[1] + SEP <= l.x - HALF) add(1, 'right', Math.min(nextX, right) - l.x - SEP * 0.5);
+    add(1, 'left', l.x - Math.max(prevX + SEP * 0.5, st.end[1] + SEP));
+    if (st.end[0] + SEP <= l.x - HALF) {
+      add(0, 'right', row0Right - l.x);
+      if (nextX < row0Right) add(0, 'right', nextX - l.x - SEP);
+    }
+    add(0, 'left', l.x - st.end[0] - SEP);
+    out.push({ hidden: true });
+    return out;
+  };
+  let beam = [{ end: [padX - SEP, padX - SEP], score: 0, picks: [] }];
+  labels.forEach((l, n) => {
+    const next = [];
+    for (const st of beam) {
+      for (const o of options(l, n, st)) {
+        const end = [...st.end];
+        let score = st.score;
+        if (o.hidden) score -= 300;
+        else {
+          end[o.row] = o.lx + o.w;
+          score += 20 + 100 * Math.sqrt(Math.max(0, o.w - l.tw) / Math.max(1, l.full - l.tw)) + (o.row === 1 ? 3 : 0);
+        }
+        next.push({ end, score, picks: [...st.picks, o] });
       }
-      l.show = limit - l.lx >= l.tw;
-      l.text = room >= measure('Abc\u2026', 400, TT) ? t : '';
-    });
-  }
+    }
+    next.sort((p, q) => q.score - p.score);
+    const seen = new Set();
+    beam = next.filter((st) => {
+      const key = st.end.map((v) => Math.round(v / 8)).join(',');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, 60);
+  });
+  beam[0].picks.forEach((o, n) => {
+    const l = labels[n];
+    l.show = !o.hidden;
+    if (!l.show) return;
+    l.row = o.row;
+    let t = l.title;
+    const roomTitle = o.w - l.tw - GAP;
+    if (measure(t, 400, TT) > roomTitle) {
+      while (t.length > 1 && measure(t + '\u2026', 400, TT) > roomTitle) t = t.slice(0, -1);
+      t = t.trimEnd().replace(/[,;:(]$/, '') + '\u2026';
+    }
+    l.text = t === l.title || roomTitle >= measure('Abc\u2026', 400, TT) ? t : '';
+    const w = l.tw + (l.text ? GAP + measure(l.text, 400, TT) : 0);
+    l.side = o.side;
+    l.lx = o.side === 'right' ? l.x - HALF : l.x + HALF - w;
+  });
   const marks = labels.map((l) => {
     const { a, x, y } = l;
     const past = (a.end ?? a.start + 30) <= nowMin();
@@ -759,7 +793,9 @@ function renderDay() {
         ${a.end ? `<path class="span" d="${path(a.start, Math.min(a.end, to))}"/>` : ''}
         ${l.show ? `<line class="leader" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${(ly + 0.6 * R).toFixed(1)}" y2="${(y - 0.7 * R).toFixed(1)}"/>` : ''}
         <circle class="dot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(0.42 * R).toFixed(1)}"/>
-        ${l.show ? `<text x="${l.lx.toFixed(1)}" y="${ly.toFixed(1)}"><tspan class="mark-time">${l.time}</tspan>${l.text ? `<tspan class="mark-title" dx="${GAP.toFixed(1)}">${esc(l.text)}</tspan>` : ''}</text>` : ''}
+        ${!l.show ? '' : l.side === 'left'
+          ? `<text x="${l.lx.toFixed(1)}" y="${ly.toFixed(1)}">${l.text ? `<tspan class="mark-title">${esc(l.text)}</tspan>` : ''}<tspan class="mark-time"${l.text ? ` dx="${GAP.toFixed(1)}"` : ''}>${l.time}</tspan></text>`
+          : `<text x="${l.lx.toFixed(1)}" y="${ly.toFixed(1)}"><tspan class="mark-time">${l.time}</tspan>${l.text ? `<tspan class="mark-title" dx="${GAP.toFixed(1)}">${esc(l.text)}</tspan>` : ''}</text>`}
       </g>`;
   }).join('');
 
