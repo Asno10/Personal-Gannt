@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=52';
-import * as cal from './calendar.js?v=52';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=52';
+import * as api from './sheets.js?v=53';
+import * as cal from './calendar.js?v=53';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=53';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -69,7 +69,7 @@ const app = $('#app');
 // opening, and whenever the app comes back to the screen, it asks for the
 // published version without any cache; if a newer one is out, it reloads at a
 // fresh address so every file is fetched new.
-const BUILD = '52';
+const BUILD = '53';
 
 async function checkForUpdate() {
   try {
@@ -148,13 +148,49 @@ function signOut() {
 
 let lastRawJson = '';
 
+// The day the pages were last drawn for. When the date changes while the app
+// stays open (left on overnight, or reopened from the background the next
+// morning), everything that depends on today is drawn again: the today marks,
+// what counts as overdue, the countdowns and the end of the chart. If the Day
+// view was on today, it follows to the new day.
+let seenToday = todayKey();
+let dayTimer = 0;
+
+function rollDay() {
+  const tk = todayKey();
+  if (tk === seenToday) return false;
+  if (state.day === seenToday) state.day = tk;
+  seenToday = tk;
+  return true;
+}
+
+function scheduleDayChange() {
+  clearTimeout(dayTimer);
+  const now = new Date();
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+  dayTimer = setTimeout(dayChanged, next - now);
+}
+
+function dayChanged() {
+  scheduleDayChange();
+  if (!state.plan || !state.raw || todayKey() === seenToday) return;
+  if (writes.size || inflight || pendingOps) return; // the reload after the save picks it up
+  rollDay();
+  state.plan = parseItems(state.raw.items, state.raw.settings, todayKey());
+  state.flags = parseFlags(state.raw.reschedule);
+  state.day = clampDay(state.day);
+  render();
+  if ($('#strip')) centerStrip(true);
+}
+
 async function refresh({ first = false } = {}) {
   if (first) app.innerHTML = `<main class="gate"><p class="loading">Loading the plan</p></main>`;
   try {
     const raw = await api.loadAll();
     if (writes.size || inflight || pendingOps) return; // newer local edits are waiting; their own refresh follows
     const json = JSON.stringify([raw.items, raw.settings, raw.reschedule]);
-    const changed = json !== lastRawJson;
+    const rolled = rollDay();
+    const changed = json !== lastRawJson || rolled;
     lastRawJson = json;
     state.raw = raw;
     state.loadedAt = Date.now();
@@ -165,9 +201,12 @@ async function refresh({ first = false } = {}) {
     }
     if (first) {
       state.day = clampDay(todayKey());
+      scheduleDayChange();
       render();
     } else if (changed) {
+      state.day = clampDay(state.day);
       render();
+      if (rolled && $('#strip')) centerStrip(true);
     } else {
       renderStatus();
     }
@@ -343,7 +382,7 @@ const studyFlagOf = (item, k) => pendingFlags().find((f) => f.kind === 'study' &
 const flagMark = (flagged) => (flagged ? `<span class="flag-mark" title="Flagged for rescheduling" aria-label="Flagged for rescheduling">${ICON.flag}</span>` : '');
 
 function itemWhen(item) {
-  const due = taskDue(item) || item.start || '';
+  const due = currentDays(item)[0] || '';
   return [due, item.time].filter(Boolean).join(' ');
 }
 
@@ -612,6 +651,252 @@ async function archivePast(opts = {}) {
   if ($('#tl-scroll')) scrollTimelineToToday(false);
 }
 
+// ---------- Reschedule what is not done ----------
+// One button for the morning after: everything unfinished from before today
+// (overdue tasks and readings, and planned study hours not logged as studied)
+// is planned again from today on. Work already planned ahead stays where it
+// is and counts toward each day's load. A day takes at most the chosen number
+// of hours, and nothing moves past its own exam or deadline. The sheet shows
+// where everything lands before anything is written, and the toast can undo it.
+
+const RS_LIMITS = [5, 6, 8, 10];
+const RS_HORIZON = 28; // days ahead, for work with no exam or deadline
+const RS_QUICK = 0.25; // hours assumed for a task with no length
+const half = (n) => Math.round(n * 2) / 2;
+// A task's length: its hours, or the minutes of a timed one.
+const hoursOf = (t) => t.hours || (t.time && t.minutes ? t.minutes / 60 : 0);
+
+// What is behind: open tasks and readings whose planned days have all passed,
+// and past days of planned study with less logged than planned. Anything
+// already flagged for the scheduled run is left to that run.
+function undoneWork(tk = todayKey()) {
+  const stale = new Set(staleReadings(tk));
+  const movable = (t) => t.id && isOverdue(t) && !flagOf(t.id);
+  const tasks = allTasks().filter(movable);
+  const reads = readings().filter((r) => movable(r) && !stale.has(r));
+  const staleReads = readings().filter((r) => movable(r) && stale.has(r));
+  const study = [];
+  for (const s of state.plan.study) {
+    if (!s.id) continue;
+    for (const [d, v] of Object.entries(s.cells)) {
+      if (d >= tk || studyFlagOf(s, d)) continue;
+      const short = half(toNumber(v) - loggedOn(s.subject, d));
+      if (short > 0) study.push({ item: s, day: d, hours: short });
+    }
+  }
+  study.sort((a, b) => a.day.localeCompare(b.day));
+  return { tasks, reads, staleReads, study, studyHours: study.reduce((n, x) => n + x.hours, 0) };
+}
+const anyUndone = () => { const w = undoneWork(); return Boolean(w.tasks.length || w.reads.length || w.staleReads.length || w.study.length); };
+
+// The last day an item can usefully move to: the day before its subject's
+// next exam, or the day of the next deadline for its subject or area.
+function lastDayFor(item, tk) {
+  const names = [item.subject, item.type === 'study' ? '' : item.area].filter(Boolean);
+  const out = [];
+  for (const e of state.plan.exams) {
+    if (e.subject && e.subject === item.subject && e.start >= tk && !examFinished(e)) out.push({ day: e.start > tk ? addDays(e.start, -1) : tk, what: `the ${e.subject} exam` });
+  }
+  for (const e of ofType('event')) {
+    if (e.start && e.start >= tk && /deadline/i.test(e.subject) && names.includes(e.area)) out.push({ day: e.start, what: e.title });
+  }
+  return out.sort((a, b) => a.day.localeCompare(b.day))[0] || null;
+}
+
+// Works out where everything goes, without changing anything.
+// Returns { items: [{ item, to, over }], study: [{ item, day, moved, puts: [[day, hours]] }], left: [{ title, why }] }.
+function planReschedule({ tasks = true, reads = true, stale = false, study = true, limit = 5, from } = {}) {
+  const tk = todayKey();
+  from = from && from > tk ? from : tk;
+  const w = undoneWork(tk);
+  const subjects = new Set(state.plan.study.map((s) => s.subject));
+  const moving = new Set([...(tasks ? w.tasks : []), ...(reads ? w.reads : []), ...(stale ? w.staleReads : [])]);
+  const add = (o, k, v) => { o[k] = (o[k] || 0) + v; };
+
+  // What each day already holds. Study hours are the load; a task whose
+  // subject has a study row is part of those hours, so it draws on that
+  // subject's hours for the day (its budget) and adds no load of its own.
+  const load = {};
+  const budget = {};
+  for (const s of state.plan.study) {
+    for (const [d, v] of Object.entries(s.cells)) {
+      if (d < from) continue;
+      add(load, d, toNumber(v));
+      add((budget[s.subject] ||= {}), d, toNumber(v));
+    }
+  }
+  for (const t of [...allTasks(), ...readings()]) {
+    if (t.status.status !== 'open' || moving.has(t)) continue;
+    const all = currentDays(t);
+    const h = hoursOf(t) / (all.length || 1);
+    if (!h) continue;
+    for (const d of all) {
+      if (d < from) continue;
+      if (subjects.has(t.subject)) add((budget[t.subject] ||= {}), d, -h); else add(load, d, h);
+    }
+  }
+
+  const jobs = [];
+  if (study) for (const x of w.study) jobs.push({ kind: 'study', item: x.item, was: x.day, hours: x.hours, prio: 9 });
+  for (const t of moving) jobs.push({ kind: 'item', item: t, was: taskDue(t) || '', hours: hoursOf(t), prio: /^P\d$/.test(t.priority) ? Number(t.priority[1]) : 5 });
+  for (const j of jobs) j.last = lastDayFor(j.item, tk);
+  // Study hours first: a task that belongs to a study subject is placed on a
+  // day that has that subject's hours, so the hours have to land before it.
+  // Within each kind: nearest deadline first, then the oldest, then by priority.
+  jobs.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'study' ? -1 : 1)
+    || (a.last?.day || '9').localeCompare(b.last?.day || '9') || a.was.localeCompare(b.was) || a.prio - b.prio);
+
+  const plan = { items: [], study: [], left: [], limit, from };
+  for (const j of jobs) {
+    const end = j.last ? j.last.day : addDays(from, RS_HORIZON - 1);
+    const win = keysBetween(from, end);
+    const subject = j.item.subject;
+
+    if (j.kind === 'study') {
+      const title = `${subject}, ${fmtH(j.hours)} h from ${shortLabel(j.was)}`;
+      if (!j.last && state.plan.exams.some((e) => e.subject === subject)) { plan.left.push({ title, why: 'its exam is over' }); continue; }
+      let rest = j.hours;
+      const puts = [];
+      for (const d of win) {
+        const room = Math.floor((limit - (load[d] || 0)) * 2) / 2;
+        if (room <= 0) continue;
+        const h = Math.min(rest, room);
+        puts.push([d, h]);
+        add(load, d, h);
+        add((budget[subject] ||= {}), d, h);
+        rest -= h;
+        if (rest <= 0) break;
+      }
+      if (puts.length) plan.study.push({ item: j.item, day: j.was, moved: j.hours - rest, puts });
+      if (rest > 0) plan.left.push({ title: `${subject}, ${fmtH(rest)} h from ${shortLabel(j.was)}`, why: j.last ? `no room before ${j.last.what}` : 'no room in the next four weeks' });
+      continue;
+    }
+
+    // A task or reading goes on one day: where its subject's study hours have
+    // room for it, else the first day under the limit, else the lightest day.
+    const days = win.length ? win : [from];
+    let to = j.hours && subjects.has(subject) ? days.find((d) => (budget[subject]?.[d] || 0) >= j.hours) : null;
+    let over = false;
+    if (to) add(budget[subject], to, -j.hours);
+    else {
+      const cost = j.hours || RS_QUICK;
+      to = days.find((d) => (load[d] || 0) + cost <= limit);
+      if (!to) { over = true; to = days.reduce((best, d) => ((load[d] || 0) < (load[best] || 0) ? d : best), days[0]); }
+      add(load, to, cost);
+    }
+    plan.items.push({ item: j.item, to, over, last: j.last });
+  }
+  return plan;
+}
+
+// Writes a plan from planReschedule to the sheet, with one Undo for all of it.
+function applyReschedule(plan) {
+  const before = [];
+  const rows = new Set();
+  for (const m of plan.study) {
+    const it = m.item;
+    if (!rows.has(it)) { rows.add(it); before.push({ id: it.id, fields: { days: { ...it.cells } } }); }
+    const stays = half(toNumber(it.cells[m.day]) - m.moved);
+    if (stays > 0) it.cells[m.day] = String(stays); else delete it.cells[m.day];
+    for (const [d, h] of m.puts) it.cells[d] = String(half(toNumber(it.cells[d]) + h));
+  }
+  for (const it of rows) setFields(it, { days: it.cells });
+  for (const m of plan.items) {
+    const it = m.item;
+    before.push({ id: it.id, fields: { date: it.start || '', end: it.end || '', days: { ...it.cells } } });
+    const cells = {};
+    for (const [k, v] of Object.entries(it.cells)) if (!/^x$/i.test(String(v).trim())) cells[k] = v;
+    it.cells = cells;
+    it.start = m.to;
+    it.end = null;
+    setFields(it, { date: m.to, end: '', days: cells });
+  }
+  if (!before.length) return toast('Nothing to reschedule.');
+  render();
+  const hours = plan.study.reduce((n, m) => n + m.moved, 0);
+  const what = [plan.items.length ? plural(plan.items.length, 'item') : '', hours ? `${fmtH(hours)} h of study` : ''].filter(Boolean).join(' and ');
+  toast(`Rescheduled ${what} from ${relDay(plan.from).toLowerCase()} on.`, () => {
+    for (const b of before) {
+      const it = findItem(b.id);
+      if (!it) continue;
+      if ('date' in b.fields) { it.start = b.fields.date || null; it.end = b.fields.end || null; }
+      it.cells = { ...b.fields.days };
+      setFields(it, b.fields, { delay: 0 });
+    }
+    render();
+  }, 12000);
+}
+
+// Where the plan puts things, day by day, and what it leaves behind.
+function reschedulePreview(plan) {
+  const by = {};
+  for (const m of plan.items) (by[m.to] ||= { n: 0, h: 0 }).n++;
+  for (const m of plan.study) for (const [d, h] of m.puts) (by[d] ||= { n: 0, h: 0 }).h += h;
+  const days = Object.keys(by).sort();
+  const over = plan.items.filter((m) => m.over).length;
+  const line = (d) => `<li><b>${esc(relDay(d))}</b><span>${esc([by[d].n ? plural(by[d].n, 'item') : '', by[d].h ? `${fmtH(by[d].h)} h study` : ''].filter(Boolean).join(', '))}</span></li>`;
+  return `
+    ${days.length
+      ? `<p><b>Where it goes</b></p><ul class="rs-days">${days.slice(0, 8).map(line).join('')}</ul>${days.length > 8 ? `<p class="rs-note">and ${plural(days.length - 8, 'more day')}, up to ${esc(relDay(days.at(-1)))}.</p>` : ''}`
+      : '<p>Nothing moves with these choices.</p>'}
+    ${over ? `<p class="rs-note rs-warn">${plural(over, 'item')} had no day under ${plan.limit} h before ${over === 1 ? 'its' : 'their'} deadline, so ${over === 1 ? 'it goes' : 'they go'} on the lightest day. Raise the daily hours or move ${over === 1 ? 'it' : 'them'} by hand.</p>` : ''}
+    ${plan.left.length ? `<p class="rs-note rs-warn">Staying where ${plan.left.length === 1 ? 'it is' : 'they are'}:</p><ul class="rs-left">${plan.left.slice(0, 5).map((l) => `<li>${esc(l.title)}: ${esc(l.why)}</li>`).join('')}${plan.left.length > 5 ? `<li>and ${plan.left.length - 5} more</li>` : ''}</ul>` : ''}`;
+}
+
+function rescheduleSheet() {
+  const tk = todayKey();
+  const w = undoneWork(tk);
+  const waiting = pendingFlags().filter((f) => f.kind !== 'calendar').length;
+  if (!w.tasks.length && !w.reads.length && !w.staleReads.length && !w.study.length) {
+    openSheet(`
+      ${sheetHead('Nothing is behind', 'No overdue tasks or readings, and no planned study left unlogged before today.')}
+      ${waiting ? `<p class="dlg-sub">${plural(waiting, 'flagged item')} ${waiting === 1 ? 'is' : 'are'} waiting for the next scheduled run.</p>` : ''}
+      ${sheetActions('Done')}`, () => {});
+    return;
+  }
+  const opt = (name, on, label) => `<label class="arch-opt"><input type="checkbox" name="${name}" value="1" ${on ? 'checked' : ''}><span>${label}</span></label>`;
+  const pick = (name, list, cur) => `<div class="choice-row">${list.map(([v, l]) => `<button type="button" class="choice ${v === cur ? 'is-on' : ''}" data-set="${name}" data-value="${v}">${l}</button>`).join('')}<input type="hidden" name="${name}" value="${cur}"></div>`;
+  const read = (d) => ({
+    tasks: d.rs_tasks === '1', reads: d.rs_reads === '1', stale: d.rs_stale === '1', study: d.rs_study === '1',
+    limit: toNumber(d.limit) || 5, from: d.from === 'tomorrow' ? addDays(todayKey(), 1) : todayKey(),
+  });
+  openSheet(`
+    ${sheetHead('Reschedule what is not done', 'Unfinished work from before today is planned again from today on. What is already planned ahead stays where it is.')}
+    <p class="dlg-label">Move</p>
+    <div class="rs-opts">
+      ${w.tasks.length ? opt('rs_tasks', true, `<b>${plural(w.tasks.length, 'overdue task')}</b>`) : ''}
+      ${w.reads.length ? opt('rs_reads', true, `<b>${plural(w.reads.length, 'overdue reading')}</b>`) : ''}
+      ${w.staleReads.length ? opt('rs_stale', false, `<b>${plural(w.staleReads.length, 'unfinished reading')}</b> for subjects with nothing planned ahead (${esc([...new Set(w.staleReads.map((r) => r.subject))].join(', '))})`) : ''}
+      ${w.study.length ? opt('rs_study', true, `<b>${fmtH(w.studyHours)} h of planned study</b> not logged as studied`) : ''}
+    </div>
+    <p class="dlg-label">Start from</p>
+    ${pick('from', [['today', 'Today'], ['tomorrow', 'Tomorrow']], 'today')}
+    <p class="dlg-label">Most hours on one day</p>
+    ${pick('limit', RS_LIMITS.map((n) => [String(n), `${n} h`]), '5')}
+    <div class="arch-box rs-preview" id="rs-preview"></div>
+    <p class="dlg-hint">Nothing moves past its exam or deadline.${waiting ? ` ${plural(waiting, 'flagged item')} ${waiting === 1 ? 'is' : 'are'} left for the next scheduled run.` : ''} You can undo it straight after.</p>
+    <div class="dlg-actions">
+      <button class="btn btn-quiet" value="cancel" formnovalidate>Cancel</button><span class="spacer"></span>
+      <button class="btn btn-primary" value="go">Reschedule</button>
+    </div>`,
+  (d, which) => { if (which === 'go') applyReschedule(planReschedule(read(d))); },
+  {
+    onOpen(form) {
+      wireChoices(form);
+      const draw = () => {
+        const plan = planReschedule(read(Object.fromEntries(new FormData(form))));
+        form.querySelector('#rs-preview').innerHTML = reschedulePreview(plan);
+        form.querySelector('[value="go"]').disabled = !plan.items.length && !plan.study.length;
+      };
+      form.addEventListener('input', draw);
+      form.addEventListener('change', draw);
+      draw();
+    },
+  });
+}
+
+const rescheduleButton = (label = 'Reschedule everything not done') => `<button class="rs-btn" data-action="reschedule-all">${ICON.forward}${label}</button>`;
+
 function setSync(s) {
   state.sync = s;
   clearTimeout(savedTimer);
@@ -692,10 +977,23 @@ async function loadCalendarEvents({ force = false } = {}) {
     if (!c.calendars.length) c.calendars = await cal.listCalendars();
     const list = c.calendars.filter(isShown);
     const byDay = {};
+    // A calendar that cannot be read (removed, or shared access withdrawn)
+    // is left out; the others still show.
+    let failed = null;
+    let loaded = 0;
     await Promise.all(list.map(async (cl) => {
-      const evs = await cal.listEvents(cl.id, days[0].key, days.at(-1).key);
+      let evs;
+      try {
+        evs = await cal.listEvents(cl.id, days[0].key, days.at(-1).key);
+      } catch (e) {
+        if (e instanceof cal.CalendarOff || e instanceof api.AuthError) throw e;
+        failed = e;
+        return;
+      }
+      loaded++;
       for (const ev of evs) for (const d of cal.toDayEvents(ev, cl)) (byDay[d.key] ||= []).push(d);
     }));
+    if (failed && !loaded) throw failed;
     for (const k of Object.keys(byDay)) byDay[k].sort((a, b) => (a.allDay === b.allDay ? (a.time || '').localeCompare(b.time || '') : a.allDay ? -1 : 1));
     c.byDay = byDay;
     c.loadedRange = range;
@@ -1000,7 +1298,7 @@ const ofType = (type) => state.plan.byType(type);
 const allTasks = () => ofType('task');
 const findItem = (id) => state.plan?.items.find((i) => i.id === id);
 const readings = () => ofType('reading');
-const readingsOn = (k) => readings().filter((r) => r.start === k);
+const readingsOn = (k) => readings().filter((r) => currentDays(r).includes(k));
 const notesOn = (k) => ofType('note').filter((n) => coversDay(n, k));
 const exerciseOn = (k) => ofType('exercise').filter((e) => e.cells[k]);
 const EX_MARK = { A: 'Day A: upper body and scapular', B: 'Day B: lower body, core and back', L: 'Light posture block', W: 'Weigh-in' };
@@ -1008,10 +1306,15 @@ const exLabel = (v) => EX_MARK[String(v).toUpperCase()] || v;
 
 const studyHoursOn = (k) => state.plan.study.reduce((n, s) => n + toNumber(s.cells[k]), 0);
 const studyOn = (k) => state.plan.study.map((s) => ({ item: s, hours: toNumber(s.cells[k]) })).filter((x) => x.hours > 0);
-const plannedDays = (t) => Object.entries(t.cells).filter(([, v]) => /x/i.test(v)).map(([d]) => d).sort();
-const taskDue = (t) => plannedDays(t)[0] || t.start || null;
-const tasksOn = (k) => allTasks().filter((t) => (plannedDays(t).length ? plannedDays(t).includes(k) : t.start === k));
-const isOverdue = (t) => t.status.status === 'open' && taskDue(t) && taskDue(t) < todayKey();
+// Scattered days are X marks in the days column. Only a cell that is exactly
+// "X" counts, so an exercise code such as "4x4" is not read as a planned day.
+const plannedDays = (t) => Object.entries(t.cells).filter(([, v]) => /^x$/i.test(String(v).trim())).map(([d]) => d).sort();
+// The day a task is due, for labels and sorting: its next planned day from
+// today on, or its last planned day once they are all behind it. A task
+// planned over several days is overdue only when the last of them has passed.
+const taskDue = (t) => { const ds = currentDays(t); const tk = todayKey(); return ds.find((d) => d >= tk) || ds.at(-1) || null; };
+const tasksOn = (k) => allTasks().filter((t) => currentDays(t).includes(k));
+const isOverdue = (t) => t.status.status === 'open' && Boolean(taskDue(t)) && taskDue(t) < todayKey();
 
 // The days a task is on: its X cells, or else its Start to End dates.
 function currentDays(t) {
@@ -1214,7 +1517,7 @@ function renderToday() {
   const overdue = isToday ? allTasks().filter((t) => isOverdue(t) && !tasks.includes(t)) : [];
   const reads = readingsOn(k);
   const readsDone = reads.filter((r) => r.status.status === 'done').length;
-  const readsLate = isToday ? readings().filter((r) => r.status.status === 'open' && r.start && r.start < k) : [];
+  const readsLate = isToday ? readings().filter((r) => isOverdue(r)) : [];
   const events = ofType('event').filter((e) => coversDay(e, k)).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
   const calEvents = calEventsOn(k);
   const exercise = exerciseOn(k);
@@ -1256,6 +1559,7 @@ function renderToday() {
         <button class="fold ${state.showDone ? 'is-open' : ''}" data-action="toggle-done" aria-expanded="${state.showDone}">${ICON.down}${plural(done.length, 'done task')}</button>
         ${foldPanel(state.showDone, `<ul class="task-list">${done.map((t) => taskRow(t, { hideDate: true })).join('')}</ul>`)}` : ''}
       ${overdue.length ? `<h3 class="sub is-alert">Overdue</h3><ul class="task-list">${overdue.map((t) => taskRow(t)).join('')}</ul>` : ''}
+      ${isToday && (overdue.length || readsLate.length) ? rescheduleButton() : ''}
       <button class="add-btn" data-action="add-task" data-day="${k}">${ICON.plus}Add a task for ${esc(relDay(k).toLowerCase().startsWith('to') || relDay(k) === 'Yesterday' ? relDay(k).toLowerCase() : 'this day')}</button>`)}
 
     ${fold('calendar', `<h2>Calendar</h2><span class="block-meta">${calMeta()}</span>`, `      ${events.map((e) => eventLine(e, k)).join('')}
@@ -1404,6 +1708,16 @@ function renderTimeline() {
   const idx = Object.fromEntries(days.map((d, i) => [d.key, i]));
   const maxH = Math.max(1, ...state.plan.study.flatMap((s) => Object.values(s.cells).map(toNumber)));
   const at = (k, inner, cls = '', w = 1) => (idx[k] == null || !inner ? '' : `<span class="gc ${cls}" style="--i:${idx[k]}${w > 1 ? `;--w:${w}` : ''}">${inner}</span>`);
+  // A day's column, also for days off the chart: -1 before it, n after it.
+  const pos = (k) => idx[k] ?? (k < days[0].key ? -1 : n);
+  // The columns a run of days covers on the chart, or null when none of it
+  // shows. A run that began before the first day (after Archive past, say)
+  // starts at the first column.
+  const runCols = (a, b) => {
+    if (!a || !n || pos(b || a) < 0 || pos(a) > n - 1) return null;
+    const i0 = Math.max(0, pos(a));
+    return { i0, w: Math.min(n - 1, pos(b || a)) - i0 + 1 };
+  };
 
   // Dates along the top.
   const dates = days.map((d, i) => {
@@ -1478,8 +1792,8 @@ function renderTimeline() {
     let inner = '';
     const shown = new Set([...keys, ...Object.keys(pills), ...Object.keys(logRowFor(s.subject)?.cells || {})]);
     // A thin line through the empty days between the first study day and the exam.
-    if (keys[0] && runEnd && idx[keys[0]] != null && idx[runEnd] != null) {
-      for (let i = idx[keys[0]] + 1, j; i < idx[runEnd]; i = j) {
+    if (keys[0] && runEnd && n && idx[runEnd] != null && pos(keys[0]) < idx[runEnd]) {
+      for (let i = pos(keys[0]) + 1, j; i < idx[runEnd]; i = j) {
         j = i + 1;
         if (shown.has(days[i].key)) continue;
         while (j < idx[runEnd] && !shown.has(days[j].key)) j++;
@@ -1505,9 +1819,8 @@ function renderTimeline() {
   // A task or reading: a dot on each planned day, a tick once done.
   const dots = (t, dotCls = '') => {
     const isDone = t.status.status === 'done';
-    const pd = plannedDays(t);
     const mark = !isDone && flagOf(t.id) ? `<span class="tl-flag" aria-label="Flagged for rescheduling">${ICON.flag}</span>` : '';
-    return (pd.length ? pd : t.start ? [t.start] : []).map((k) => at(k, isDone ? `<span class="tl-done">${ICON.check}</span>` : `<span class="tl-dot ${dotCls}"></span>${mark}`)).join('');
+    return currentDays(t).map((k) => at(k, isDone ? `<span class="tl-done">${ICON.check}</span>` : `<span class="tl-dot ${dotCls}"></span>${mark}`)).join('');
   };
 
   // Tasks: open ones first by date; done ones only when asked for.
@@ -1533,7 +1846,7 @@ function renderTimeline() {
   }
 
   // Reading plans: one row per reading, by subject and date.
-  const readRows = readings().slice().sort((x, y) => (x.subject + (x.start || '9')).localeCompare(y.subject + (y.start || '9'))).map((r) => {
+  const readRows = readings().slice().sort((x, y) => (x.subject + (taskDue(x) || '9')).localeCompare(y.subject + (taskDue(y) || '9'))).map((r) => {
     const isDone = r.status.status === 'done';
     const late = isOverdue(r);
     return {
@@ -1558,14 +1871,12 @@ function renderTimeline() {
   const eventRows = ofType('event').filter((e) => !(e.start && studySubjects.has(e.area))).map((e) => {
     const dl = deadlineState(e);
     const alert = dl && !dl.passed;
-    const s0 = e.start;
-    const s1 = e.end || e.start;
-    const span = s0 && idx[s0] != null ? Math.max(1, (idx[s1] ?? idx[s0]) - idx[s0] + 1) : 1;
+    const bar = runCols(e.start, e.end);
     const marks = Object.keys(e.cells).map((k) => at(k, `<span class="tl-bar ${alert ? 'is-alert' : ''}"></span>`)).join('');
     return {
       cls: `tl-events ${dl ? (dl.passed ? 'is-deadline is-passed' : 'is-deadline') : ''}`,
       name: nameHtml({ name: e.title, sub: dl ? [dl.when, e.time].filter(Boolean).join(', ') : [e.subject, e.time].filter(Boolean).join(', '), action: `data-action="edit-task" data-id="${e.id}"`, flag: flagOf(e.id) }),
-      cell: grid('open-day', '', (s0 ? at(s0, `<span class="tl-bar ${alert ? 'is-alert' : ''}"></span>${flagOf(e.id) ? `<span class="tl-flag" aria-label="Flagged for rescheduling">${ICON.flag}</span>` : ''}`, 'is-bar', span) : '') + marks),
+      cell: grid('open-day', '', (bar ? at(days[bar.i0].key, `<span class="tl-bar ${alert ? 'is-alert' : ''}"></span>${flagOf(e.id) ? `<span class="tl-flag" aria-label="Flagged for rescheduling">${ICON.flag}</span>` : ''}`, 'is-bar', bar.w) : '') + marks),
     };
   });
 
@@ -1580,8 +1891,8 @@ function renderTimeline() {
 
   // Exercise: one row per programme phase and the weigh-ins.
   const exerciseRows = ofType('exercise').map((x) => {
-    const phase = x.start && idx[x.start] != null && !/weigh/i.test(x.subject)
-      ? `<i class="gc-phase" style="--i:${idx[x.start]};--w:${(idx[x.end || x.start] ?? n - 1) - idx[x.start] + 1}"></i>` : '';
+    const run = /weigh/i.test(x.subject) ? null : runCols(x.start, x.end);
+    const phase = run ? `<i class="gc-phase" style="--i:${run.i0};--w:${run.w}"></i>` : '';
     return {
       cls: 'tl-exercise', name: nameHtml({ name: x.subject || x.title, sub: x.start ? `${shortLabel(x.start)} to ${shortLabel(x.end || x.start)}` : '', action: `data-action="edit-task" data-id="${x.id}"` }),
       cell: grid('edit-cell', x.id, phase + Object.entries(x.cells).map(([k, v]) => at(k, `<span class="tl-ex">${esc(v)}</span>`)).join('')),
@@ -1647,7 +1958,10 @@ function renderTimeline() {
   return `
     <div class="tl-title-row">
       <h1 class="page-title tl-title">Timeline</h1>
-      <button class="tl-today-btn tl-archive-btn" data-action="archive">${ICON.archive}Archive past</button>
+      <div class="tl-title-btns">
+        <button class="tl-today-btn tl-archive-btn" data-action="reschedule-all">${ICON.forward}Reschedule</button>
+        <button class="tl-today-btn tl-archive-btn" data-action="archive">${ICON.archive}Archive past</button>
+      </div>
     </div>
     <div class="tl-legend" aria-label="Legend">
       <span><i class="lg-h"></i>Planned hours</span>
@@ -1782,7 +2096,7 @@ function examCard(e, tk) {
   const gap = dueSoFar - studied;
   const pace = !study || fin ? '' : gap > 0.25 ? `<span class="pace-t is-behind">${fmtH(gap)} h behind</span>` : studied >= total && total ? '<span class="pace-t is-good">Plan covered</span>' : dueSoFar > 0 || studied > 0 ? `<span class="pace-t is-good">${gap < -0.25 ? `${fmtH(-gap)} h ahead` : 'On plan'}</span>` : '';
   const open = state.examOpen?.has(e.subject);
-  const reads = readings().filter((r) => r.subject === e.subject && (!r.start || r.start <= e.start));
+  const reads = readings().filter((r) => r.subject === e.subject && (!taskDue(r) || taskDue(r) <= e.start));
   const readsDone = reads.filter((r) => r.status.status === 'done').length;
   const readsLate = reads.filter((r) => isOverdue(r)).length;
   const count = fin ? '<b class="is-word">Done</b>' : n === 0 ? '<b class="is-word">Today</b>' : `<b>${n}</b><small>${n === 1 ? 'day' : 'days'}</small>`;
@@ -1860,6 +2174,7 @@ function renderTasks() {
     <div class="segmented" role="tablist">
       ${[['open', 'To do'], ['done', 'Done'], ['all', 'All']].map(([v, l]) => `<button role="tab" aria-selected="${f === v}" data-action="task-filter" data-filter="${v}">${l} <span>${count(v)}</span></button>`).join('')}
     </div>
+    ${f !== 'done' && anyUndone() ? rescheduleButton() : ''}
     ${f !== 'done' ? renderFlagsBlock() : ''}
     ${sections.map(([label, list]) => `
       <section class="block">
@@ -1907,10 +2222,12 @@ function setTaskStatus(item, next, { announce = true } = {}) {
   setFields(item, { status: next, done_on: doneOn }, { delay: 300 });
   if (announce) {
     toast(next === 'done' ? `Done: ${st.title}` : `Back to do: ${st.title}`, () => {
-      item.doneOn = prev.doneOn;
-      item.status = { ...item.status, status: prev.status, doneOn: prev.doneOn ? shortLabel(prev.doneOn) : '' };
+      // The save reloads the plan, which replaces every item object.
+      const cur = findItem(item.id) || item;
+      cur.doneOn = prev.doneOn;
+      cur.status = { ...cur.status, status: prev.status, doneOn: prev.doneOn ? shortLabel(prev.doneOn) : '' };
       render();
-      setFields(item, { status: prev.status, done_on: prev.doneOn }, { delay: 0 });
+      setFields(cur, { status: prev.status, done_on: prev.doneOn }, { delay: 0 });
     });
   }
 }
@@ -1923,18 +2240,21 @@ function setTaskDays(item, days, message) {
   days = [...new Set(days)].filter(Boolean).sort();
   const before = currentDays(item);
   const run = days.length > 1 && days.every((d, i) => i === 0 || d === addDays(days[i - 1], 1));
-  const s0 = days[0] || '';
-  const s1 = days.length > 1 ? days.at(-1) : '';
+  const scattered = days.length > 1 && !run;
+  // Scattered days have no date or end, only X marks: the calendar export then
+  // makes one entry per marked day, not one bar from the first day to the last.
+  const s0 = scattered ? '' : days[0] || '';
+  const s1 = !scattered && days.length > 1 ? days.at(-1) : '';
   const cells = {};
   // Keep any non-X values (such as hours); drop the old X marks.
-  for (const [k, v] of Object.entries(item.cells)) if (!/^x$/i.test(v)) cells[k] = v;
-  if (days.length > 1 && !run) for (const d of days) cells[d] = 'X';
+  for (const [k, v] of Object.entries(item.cells)) if (!/^x$/i.test(String(v).trim())) cells[k] = v;
+  if (scattered) for (const d of days) cells[d] = 'X';
   item.cells = cells;
   item.start = s0 || null;
   item.end = s1 || null;
   render();
   setFields(item, { date: s0, end: s1, days: cells }, { delay: 200 });
-  if (message) toast(message, () => setTaskDays(item, before));
+  if (message) toast(message, () => setTaskDays(findItem(item.id) || item, before));
 }
 
 const moveTask = (item, k) => setTaskDays(item, k ? [k] : [], k ? `Moved to ${relDay(k)}` : 'Date removed');
@@ -2226,7 +2546,7 @@ const KIND = { task: 'task', reading: 'reading', event: 'event', exam: 'exam', e
 function editTask(item) {
   const st = item.status;
   const done = st.status === 'done';
-  const due = taskDue(item) || '';
+  const due = currentDays(item)[0] || '';
   const kind = KIND[item.type] || 'item';
   const checkable = ['task', 'reading'].includes(item.type) || !KIND[item.type];
   openSheet(`
@@ -2378,7 +2698,7 @@ function tvSheet() {
       ? `<p class="dlg-sub">Copy the TV link, then open it in the browser on the TV (with the Google TV app on your phone you can paste it with the phone's keyboard). The TV connects without a Google sign-in and stays connected.</p>
          <p class="dlg-sub">The link carries the app's access key, so anyone holding it can read and change your plan. Use it only on your own screen. <b>Personal Gantt &gt; Reset app access</b> in the sheet cancels it.</p>`
       : `<p class="dlg-sub">This device is not set up to stay signed in, so there is no TV link yet. Run <b>Personal Gantt &gt; Connect the app</b> in the sheet and reload, or sign in with Google on the TV instead.</p>`}
-    <p class="dlg-sub">On the TV remote: Up and Down switch night mode (automatic from 23:00 to 07:00, on or off), OK goes fullscreen and reloads.</p>
+    <p class="dlg-sub">On the TV remote: Up and Down switch night mode (automatic from 22:30 to 07:00, on or off), OK goes fullscreen and reloads.</p>
     <div class="dlg-actions">
       <a class="btn btn-quiet" href="${esc(base)}" target="_blank" rel="noopener">Open here</a><span class="spacer"></span>
       ${link ? '<button type="button" class="btn btn-primary" data-copy-tv>Copy TV link</button>' : '<button class="btn btn-primary" value="save">Done</button>'}
@@ -2658,13 +2978,13 @@ document.addEventListener('contextmenu', (ev) => { if (hold || drag) ev.preventD
 // ---------- Toast ----------
 
 let toastTimer;
-function toast(msg, undo) {
+function toast(msg, undo, ms) {
   const t = $('#toast');
   t.innerHTML = `<span>${esc(msg)}</span>${undo ? '<button class="link" data-action="undo">Undo</button>' : ''}`;
   t.classList.add('is-on');
   t._undo = undo;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.classList.remove('is-on'); t._undo = null; }, undo ? 5000 : 3000);
+  toastTimer = setTimeout(() => { t.classList.remove('is-on'); t._undo = null; }, ms || (undo ? 5000 : 3000));
 }
 
 // ---------- Events ----------
@@ -2720,6 +3040,7 @@ document.addEventListener('click', (ev) => {
     }
     case 'tl-today': return scrollTimelineToToday(true);
     case 'archive': return archiveSheet();
+    case 'reschedule-all': return rescheduleSheet();
     case 'toggle-exam': {
       const sub = el.dataset.subject;
       state.examOpen ||= new Set();
@@ -2838,6 +3159,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { flush(); return; }
   checkForUpdate();
   if (!state.plan) return;
+  dayChanged();
   api.ensureToken().then((ok) => {
     if (!ok) return renderSignIn('Your session ended. Sign in again to continue.');
     if (Date.now() - state.loadedAt > 120000 && !writes.size && !inflight) refresh();
@@ -2866,6 +3188,7 @@ const ICON = {
   target: svg('<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/>'),
   day: svg('<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/><circle cx="12" cy="15" r="1.6" fill="currentColor" stroke="none"/>'),
   grid: svg('<path d="M4 6h9M4 12h14M4 18h7"/><path d="M15 6h5M20 18h-6" opacity=".45"/>'),
+  forward: svg('<path d="M4 12h11"/><path d="M11 7l5 5-5 5"/><path d="M20 5v14"/>'),
   archive: svg('<rect x="3.5" y="4.5" width="17" height="4" rx="1"/><path d="M5 8.5v10a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-10"/><path d="M10 12.5h4"/>'),
   flag: svg('<path d="M6 21V4"/><path d="M6 4h11l-2 4 2 4H6"/>'),
   list: svg('<path d="M9 7h11M9 12h11M9 17h11"/><path d="M4 7l1 1 2-2M4 12l1 1 2-2M4 17l1 1 2-2"/>'),
