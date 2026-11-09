@@ -1116,3 +1116,19 @@ button.event { width: 100%; text-align: left; }
 
 .arch-opt { display: flex; align-items: flex-start; gap: 10px; margin: 14px 0 4px; font-size: 0.95rem; line-height: 1.4; cursor: pointer; }
 .arch-opt input { flex: none; width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--accent, #0a84ff); }
+
+/* Reschedule what is not done (build 53) */
+.tl-title-btns { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-bottom: 14px; }
+.tl-title-row { align-items: flex-start; }
+.rs-btn { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; margin: 4px 0 8px; color: var(--accent); font-weight: 500; text-align: left; }
+.rs-btn svg { width: 19px; height: 19px; flex: none; }
+.rs-opts { display: grid; gap: 2px; }
+.rs-opts .arch-opt { margin: 8px 0 2px; }
+.rs-preview p { margin: 0; }
+.rs-days, .rs-left { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 5px; font-size: 0.92rem; }
+.rs-days li { display: flex; justify-content: space-between; gap: 12px; }
+.rs-days span, .rs-left { color: var(--ink-2); text-align: right; font-variant-numeric: tabular-nums; }
+.rs-left { text-align: left; font-size: 0.88rem; }
+.rs-preview .rs-note { margin-top: 10px; color: var(--ink-2); font-size: 0.88rem; }
+.rs-preview .rs-warn { color: var(--alert); }
+.btn:disabled { opacity: 0.45; }

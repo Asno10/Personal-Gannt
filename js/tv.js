@@ -22,12 +22,12 @@
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=52';
-import * as cal from './calendar.js?v=52';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=52';
-import { initSky, setPlace, weatherIcon, weatherTemp, weatherText, placeName } from './sky.js?v=52';
+import * as api from './sheets.js?v=53';
+import * as cal from './calendar.js?v=53';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=53';
+import { initSky, setPlace, weatherIcon, weatherTemp, weatherText, placeName } from './sky.js?v=53';
 
-const BUILD = '52';
+const BUILD = '53';
 const REFRESH_MS = 2 * 60 * 1000;
 const CAL_MS = 5 * 60 * 1000;
 const EXAM_MIN = 120; // an exam counts as over two hours after it starts
@@ -234,10 +234,20 @@ const P = () => state.plan;
 const ofType = (t) => P().byType(t);
 const subjectIndex = (name) => P().study.map((s) => s.subject).indexOf(name);
 const colorOf = (name) => { const i = subjectIndex(name); return i >= 0 ? `var(--s${i % 8})` : 'var(--haze)'; };
-const plannedDays = (t) => Object.entries(t.cells).filter(([, v]) => /x/i.test(v)).map(([d]) => d).sort();
-const taskDue = (t) => plannedDays(t)[0] || t.start || null;
-const tasksOn = (k) => ofType('task').filter((t) => (plannedDays(t).length ? plannedDays(t).includes(k) : t.start === k));
-const readingsOn = (k) => ofType('reading').filter((r) => r.start === k);
+const plannedDays = (t) => Object.entries(t.cells).filter(([, v]) => /^x$/i.test(String(v).trim())).map(([d]) => d).sort();
+// The days a task is on: its X marks, or else its date to its end date.
+function currentDays(t) {
+  const xs = plannedDays(t);
+  if (xs.length) return xs;
+  if (!t.start) return [];
+  const out = [];
+  for (let d = t.start, n = 0; d <= (t.end || t.start) && n < 62; d = addDays(d, 1), n++) out.push(d);
+  return out;
+}
+// Its next planned day from today on, or its last one once all have passed.
+const taskDue = (t) => { const ds = currentDays(t); const k = todayKey(); return ds.find((d) => d >= k) || ds.at(-1) || null; };
+const tasksOn = (k) => ofType('task').filter((t) => currentDays(t).includes(k));
+const readingsOn = (k) => ofType('reading').filter((r) => currentDays(r).includes(k));
 const isOpen = (t) => t.status.status === 'open';
 const coversDay = (item, k) => (item.cells[k] ? true : item.start && item.end ? item.start <= k && k <= item.end : item.start === k);
 const logRow = (subject) => (P().logs || []).find((l) => l.subject === subject);
@@ -633,7 +643,7 @@ function renderPlan() {
   const overdue = tasks.filter((t) => taskDue(t) && taskDue(t) < k);
   const byArea = new Map();
   for (const t of tasks) {
-    const ds = (plannedDays(t).length ? plannedDays(t) : [t.start]).filter((d) => d && d >= k && d <= last);
+    const ds = currentDays(t).filter((d) => d >= k && d <= last);
     if (!ds.length) continue;
     const area = t.area || 'Other';
     if (!byArea.has(area)) byArea.set(area, { n: 0, days: {} });

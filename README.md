@@ -33,7 +33,7 @@ The **Items** tab is the single source of truth: one row per item, with columns 
 | date, end | `YYYY-MM-DD`; `end` only for multi-day items |
 | time, minutes | `HH:MM` in Istanbul time, and duration |
 | hours | Planned hours of a reading |
-| days | Per-day values: planned hours (study), studied hours (log), sessions (exercise) or X marks (scattered task days), as `2026-10-27=2.5; 2026-10-28=1` |
+| days | Per-day values: planned hours (study), studied hours (log), sessions (exercise) or X marks (scattered task days, which have no `date` or `end`), as `2026-10-27=2.5; 2026-10-28=1` |
 | status, done_on, priority | `open` or `done`, the finish date, `P1` to `P3` |
 | notes | Free text |
 | calendar | `auto` (default): in the Personal Gantt calendar; `off`: left out |
@@ -79,6 +79,16 @@ Any task, reading, event or exam, any day of planned study (from the subject's h
 | result, new_when | What the run did, and the new date and time |
 
 The daily scheduled run moves every pending flag to a later date that fits (for `study`, it moves that day's planned hours in the row's `days` to a later day before the subject's exam), then marks it `done` with a one-line result, or `skipped` with the reason. The Tasks page lists pending flags and those handled in the last three days. Removing a flag sets it to `cancelled`.
+
+## Reschedule what is not done
+
+**Reschedule** on the Timeline, and **Reschedule everything not done** on the Tasks page and under Overdue on today's Day view, plans everything unfinished from before today again, starting today (or tomorrow):
+
+- open tasks and readings whose planned days have all passed;
+- past days of planned study with less logged than planned (the shortfall moves; what was logged stays);
+- readings for subjects with nothing planned ahead, only when ticked.
+
+What is already planned ahead stays where it is and counts toward each day's load. A day takes at most the chosen number of hours (5 unless changed), and nothing moves past the day before its subject's next exam, or the day of the next deadline for its subject or area. A task that belongs to a study subject goes on a day that has that subject's hours. The sheet shows where everything lands, and what does not fit, before anything is written; study hours with no room stay where they were, and a task with no day under the limit goes on the lightest day before its deadline and is pointed out. The toast afterwards offers Undo for the whole move. Items flagged with **Reschedule later** are left to the scheduled run, and events and exercise sessions are never moved.
 
 ## Exams
 

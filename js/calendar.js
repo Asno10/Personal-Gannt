@@ -4,8 +4,8 @@
 
 // The ?v= must match the one app.js uses, or the browser loads a second copy
 // of sheets.js that has no sign-in token.
-import { accessToken, hasCalendarScope, ensureToken, renewAfterRejection } from './sheets.js?v=52';
-import { addDays } from './parse.js?v=52';
+import { accessToken, hasCalendarScope, ensureToken, renewAfterRejection } from './sheets.js?v=53';
+import { addDays } from './parse.js?v=53';
 
 const API = 'https://www.googleapis.com/calendar/v3';
 
@@ -90,7 +90,10 @@ export function toDayEvents(ev, cal) {
   const allDay = Boolean(ev.start?.date);
   const startKey = allDay ? ev.start.date : (ev.start?.dateTime || '').slice(0, 10);
   if (!startKey) return [];
-  const endKey = allDay ? addDays(ev.end?.date || addDays(startKey, 1), -1) : (ev.end?.dateTime || '').slice(0, 10) || startKey;
+  let endKey = allDay ? addDays(ev.end?.date || addDays(startKey, 1), -1) : (ev.end?.dateTime || '').slice(0, 10) || startKey;
+  // An event that ends exactly at midnight belongs to the day before, not to
+  // the day that starts then.
+  if (!allDay && endKey > startKey && /T00:00(:00)?(\.0+)?([+\-Z]|$)/.test(ev.end?.dateTime || '')) endKey = addDays(endKey, -1);
   const time = allDay ? '' : localTime(ev.start.dateTime);
   const endTime = allDay ? '' : localTime(ev.end?.dateTime);
   const out = [];
