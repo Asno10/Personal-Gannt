@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
-import * as api from './sheets.js?v=52';
-import * as cal from './calendar.js?v=52';
-import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=52';
+import * as api from './sheets.js?v=53';
+import * as cal from './calendar.js?v=53';
+import { parseItems, colLetter, keyOfDate, dateOfKey, toNumber, serializeDays, newId, FIELDS } from './parse.js?v=53';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -2483,8 +2483,22 @@ const SORTS = {
   },
 };
 
+// Opens or shuts a Timeline section. Changed in place, not redrawn, so both
+// columns animate together.
+function toggleSection(el) {
+  const id = el.dataset.key;
+  const open = state.collapsed.has(id);
+  if (open) state.collapsed.delete(id); else state.collapsed.add(id);
+  store.set('pg.tlCollapsed', JSON.stringify([...state.collapsed]));
+  el.setAttribute('aria-expanded', String(open));
+  $$(`#view-timeline .tl-section[data-sec="${id}"]`).forEach((r) => r.classList.toggle('is-shut', !open));
+  $$(`#view-timeline .tl-fold[data-fold="${id}"]`).forEach((f) => setFold(f, open));
+}
+
 let hold = null;
 let drag = null;
+// A tap on a Timeline section heading, handled on touchend (see below).
+let secTap = null;
 let swallowClickUntil = 0;
 
 function findSortable(target) {
@@ -2503,7 +2517,9 @@ function holdStart(found, x, y) {
   const item = sort.items().find((it) => it.anchor === found.el);
   if (!item) return;
   hold = { ...found, item, x, y, timer: setTimeout(() => { const h = hold; hold = null; if (h) dragStart(h.kind, h.item.key, h.y); }, HOLD_MS) };
-  item.els.forEach((el) => el.classList.add('is-pressing'));
+  // A shut fold is left alone: fading it in while pressed made iOS Safari
+  // treat the tap as a hover and drop the click, so shut sections would not open.
+  item.els.forEach((el) => { if (!el.classList.contains('at-panel') || el.classList.contains('is-open')) el.classList.add('is-pressing'); });
 }
 
 function holdCancel() {
@@ -2619,20 +2635,33 @@ function dragEnd() {
 }
 
 document.addEventListener('touchstart', (ev) => {
+  secTap = null;
   if (ev.touches.length !== 1) { holdCancel(); return; }
+  const head = ev.target.closest?.('.tlx-names .tl-section > button[data-action="toggle-section"]');
+  if (head) secTap = { el: head, x: ev.touches[0].clientX, y: ev.touches[0].clientY };
   const found = findSortable(ev.target);
   if (found) holdStart(found, ev.touches[0].clientX, ev.touches[0].clientY);
 }, { passive: true });
 document.addEventListener('touchmove', (ev) => {
   const t = ev.touches[0];
+  if (secTap && (Math.abs(t.clientX - secTap.x) > SLOP || Math.abs(t.clientY - secTap.y) > SLOP)) secTap = null;
   if (hold && (Math.abs(t.clientX - hold.x) > SLOP || Math.abs(t.clientY - hold.y) > SLOP)) holdCancel();
   if (!drag) return;
   if (ev.cancelable) ev.preventDefault();
   drag.y = t.clientY;
   dragUpdate();
 }, { passive: false });
-document.addEventListener('touchend', () => { holdCancel(); dragEnd(); }, { passive: true });
-document.addEventListener('touchcancel', () => { holdCancel(); dragEnd(); }, { passive: true });
+// A short tap on a Timeline section heading opens or shuts it right here, so
+// it does not depend on iOS turning the touch into a click. Cancelling the
+// touchend stops the click that would otherwise follow and toggle it back.
+document.addEventListener('touchend', (ev) => {
+  const tap = secTap && !drag && performance.now() >= swallowClickUntil ? secTap : null;
+  secTap = null;
+  holdCancel();
+  dragEnd();
+  if (tap && ev.cancelable) { ev.preventDefault(); toggleSection(tap.el); }
+}, { passive: false });
+document.addEventListener('touchcancel', () => { secTap = null; holdCancel(); dragEnd(); }, { passive: true });
 
 // The same with a mouse or trackpad.
 document.addEventListener('mousedown', (ev) => {
@@ -2774,17 +2803,7 @@ document.addEventListener('click', (ev) => {
       $$('#view-timeline .tl-subfold[data-sub="done"]').forEach((f) => setFold(f, open));
       return;
     }
-    case 'toggle-section': {
-      // Changed in place, not redrawn, so both columns animate together.
-      const id = el.dataset.key;
-      const open = state.collapsed.has(id);
-      if (open) state.collapsed.delete(id); else state.collapsed.add(id);
-      store.set('pg.tlCollapsed', JSON.stringify([...state.collapsed]));
-      el.setAttribute('aria-expanded', String(open));
-      $$(`#view-timeline .tl-section[data-sec="${id}"]`).forEach((r) => r.classList.toggle('is-shut', !open));
-      $$(`#view-timeline .tl-fold[data-fold="${id}"]`).forEach((f) => setFold(f, open));
-      return;
-    }
+    case 'toggle-section': return toggleSection(el);
     case 'undo': {
       const t = $('#toast');
       t.classList.remove('is-on');

@@ -22,10 +22,10 @@
 import { CONFIG } from '../config.js';
 // The ?v= must match the one calendar.js uses, or the browser loads a second
 // copy of sheets.js that has no sign-in token.
-import * as api from './sheets.js?v=52';
-import * as cal from './calendar.js?v=52';
-import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=52';
-import { initSky, setPlace, weatherIcon, weatherTemp, weatherText, placeName } from './sky.js?v=52';
+import * as api from './sheets.js?v=53';
+import * as cal from './calendar.js?v=53';
+import { parseItems, keyOfDate, dateOfKey, addDays, toNumber } from './parse.js?v=53';
+import { initSky, setPlace, weatherIcon, weatherTemp, weatherText, placeName } from './sky.js?v=53';
 
 const BUILD = '52';
 const REFRESH_MS = 2 * 60 * 1000;
